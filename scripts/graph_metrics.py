@@ -467,30 +467,27 @@ def calculate_gas_price_intervals(conn, batch_number=None):
 
 def plot_gas_price_graph(gas_price_data, effective_gas_price_data, batch_number=None):
     """Create and save the gas price graph."""
-    if not gas_price_data and not effective_gas_price_data:
-        print("No data to plot.")
+    if not effective_gas_price_data:
+        print("No effective gas price data to plot.")
         return
     
     # Prepare data for plotting
-    all_times = sorted(set(list(gas_price_data.keys()) + list(effective_gas_price_data.keys())))
+    all_times = sorted(effective_gas_price_data.keys())
     
-    gas_price_values = [gas_price_data.get(t, 0) for t in all_times]
     effective_gas_price_values = [effective_gas_price_data.get(t, 0) for t in all_times]
     
     # Create the plot
     fig, ax = plt.subplots(figsize=(14, 7))
     
-    # Plot both lines
-    ax.plot(all_times, gas_price_values, label='Transaction Gas Price', 
-            color='#2196F3', linewidth=2, marker='o', markersize=4)
-    ax.plot(all_times, effective_gas_price_values, label='Effective Gas Price (Receipt)',
-            color='#FF5722', linewidth=2, marker='s', markersize=4)
+    # Plot effective gas price line only
+    ax.plot(all_times, effective_gas_price_values, label='Effective Gas Price',
+            color='#FF5722', linewidth=2, marker='o', markersize=4)
     
     # Formatting
     ax.set_xlabel('Time', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Gas Price (Gwei)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Effective Gas Price (Gwei)', fontsize=12, fontweight='bold')
     
-    title = f'Gas Price Over Time ({INTERVAL_SECONDS}s intervals)'
+    title = f'Effective Gas Price Over Time ({INTERVAL_SECONDS}s intervals)'
     if batch_number:
         title += f'\nBatch: {batch_number}'
     ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
@@ -508,30 +505,18 @@ def plot_gas_price_graph(gas_price_data, effective_gas_price_data, batch_number=
     ax.legend(loc='best', fontsize=11, framealpha=0.9)
     
     # Add statistics text box
-    if gas_price_values or effective_gas_price_values:
-        stats_lines = []
+    if effective_gas_price_values and any(v > 0 for v in effective_gas_price_values):
+        eff_values_filtered = [v for v in effective_gas_price_values if v > 0]
+        eff_avg = statistics.mean(eff_values_filtered)
+        eff_min = min(eff_values_filtered)
+        eff_max = max(eff_values_filtered)
         
-        if gas_price_values and any(v > 0 for v in gas_price_values):
-            gas_values_filtered = [v for v in gas_price_values if v > 0]
-            gas_avg = statistics.mean(gas_values_filtered)
-            gas_min = min(gas_values_filtered)
-            gas_max = max(gas_values_filtered)
-            stats_lines.append(f'Transaction Gas:  Avg: {gas_avg:.2f} Gwei  |  Min: {gas_min:.2f} Gwei  |  Max: {gas_max:.2f} Gwei')
-        
-        if effective_gas_price_values and any(v > 0 for v in effective_gas_price_values):
-            eff_values_filtered = [v for v in effective_gas_price_values if v > 0]
-            eff_avg = statistics.mean(eff_values_filtered)
-            eff_min = min(eff_values_filtered)
-            eff_max = max(eff_values_filtered)
-            stats_lines.append(f'Effective Gas:    Avg: {eff_avg:.2f} Gwei  |  Min: {eff_min:.2f} Gwei  |  Max: {eff_max:.2f} Gwei')
-        
-        if stats_lines:
-            stats_text = '\n'.join(stats_lines)
-            ax.text(0.02, 0.98, stats_text,
-                    transform=ax.transAxes,
-                    fontsize=10,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        stats_text = f'Avg: {eff_avg:.2f} Gwei  |  Min: {eff_min:.2f} Gwei  |  Max: {eff_max:.2f} Gwei'
+        ax.text(0.02, 0.98, stats_text,
+                transform=ax.transAxes,
+                fontsize=10,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     
     plt.tight_layout()
     
@@ -553,6 +538,168 @@ def generate_gas_price_graph(conn, batch_number):
     
     print("Generating graph...")
     plot_gas_price_graph(gas_price_data, effective_gas_price_data, batch_number)
+
+
+def calculate_gas_used_intervals(conn, batch_number=None):
+    """
+    Calculate total and average gas used over time intervals.
+    
+    Returns:
+        total_gas_used: dict of {timestamp: total_gas}
+        avg_gas_used: dict of {timestamp: avg_gas}
+    """
+    cursor = conn.cursor()
+    
+    # Query to get gas used from receipts
+    if batch_number:
+        query = """
+            SELECT submitted_at, gas_used, status
+            FROM transactions
+            WHERE batch_number = ?
+            ORDER BY submitted_at
+        """
+        cursor.execute(query, (batch_number,))
+    else:
+        query = """
+            SELECT submitted_at, gas_used, status
+            FROM transactions
+            ORDER BY submitted_at
+        """
+        cursor.execute(query)
+    
+    rows = cursor.fetchall()
+    
+    if not rows:
+        print("No transactions found.")
+        return {}, {}
+    
+    # Group gas usage by time intervals
+    gas_used_intervals = defaultdict(list)
+    
+    for row in rows:
+        submitted_str, gas_used, status = row
+        
+        try:
+            submitted_dt = datetime.fromisoformat(submitted_str)
+            # Round down to nearest interval (INTERVAL_SECONDS)
+            interval_start = submitted_dt.replace(microsecond=0)
+            interval_start = interval_start - timedelta(seconds=interval_start.second % INTERVAL_SECONDS)
+            
+            # Gas used from receipt (only for successful transactions)
+            if gas_used is not None and status == 'success':
+                try:
+                    gas_used_int = int(gas_used)
+                    if gas_used_int > 0:
+                        gas_used_intervals[interval_start].append(gas_used_int)
+                except (ValueError, TypeError):
+                    pass
+        except (ValueError, TypeError):
+            continue
+    
+    # Calculate total and average gas for each interval
+    total_gas = {ts: sum(gas_list) for ts, gas_list in gas_used_intervals.items()}
+    avg_gas = {ts: statistics.mean(gas_list) if gas_list else 0 
+               for ts, gas_list in gas_used_intervals.items()}
+    
+    return total_gas, avg_gas
+
+
+def plot_gas_used_graph(total_gas_data, avg_gas_data, batch_number=None):
+    """Create and save the gas used graph."""
+    if not total_gas_data and not avg_gas_data:
+        print("No gas usage data to plot.")
+        return
+    
+    # Prepare data for plotting
+    all_times = sorted(set(list(total_gas_data.keys()) + list(avg_gas_data.keys())))
+    
+    total_gas_values = [total_gas_data.get(t, 0) for t in all_times]
+    avg_gas_values = [avg_gas_data.get(t, 0) for t in all_times]
+    
+    # Create the plot with two y-axes
+    fig, ax1 = plt.subplots(figsize=(14, 7))
+    
+    # Plot total gas on primary y-axis
+    color1 = '#2196F3'
+    ax1.set_xlabel('Time', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Total Gas Used', fontsize=12, fontweight='bold', color=color1)
+    line1 = ax1.plot(all_times, total_gas_values, label='Total Gas Used', 
+                     color=color1, linewidth=2, marker='o', markersize=4)
+    ax1.tick_params(axis='y', labelcolor=color1)
+    
+    # Create secondary y-axis for average gas
+    ax2 = ax1.twinx()
+    color2 = '#FF9800'
+    ax2.set_ylabel('Average Gas per Transaction', fontsize=12, fontweight='bold', color=color2)
+    line2 = ax2.plot(all_times, avg_gas_values, label='Avg Gas per Tx',
+                     color=color2, linewidth=2, marker='s', markersize=4)
+    ax2.tick_params(axis='y', labelcolor=color2)
+    
+    # Title
+    title = f'Gas Usage Over Time ({INTERVAL_SECONDS}s intervals)'
+    if batch_number:
+        title += f'\nBatch: {batch_number}'
+    ax1.set_title(title, fontsize=14, fontweight='bold', pad=20)
+    
+    # Format x-axis
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.xticks(rotation=45, ha='right')
+    
+    # Grid
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.set_axisbelow(True)
+    
+    # Combined legend
+    lines = line1 + line2
+    labels = [l.get_label() for l in lines]
+    ax1.legend(lines, labels, loc='best', fontsize=11, framealpha=0.9)
+    
+    # Add statistics text box
+    stats_lines = []
+    
+    if total_gas_values and any(v > 0 for v in total_gas_values):
+        total_values_filtered = [v for v in total_gas_values if v > 0]
+        total_sum = sum(total_values_filtered)
+        total_avg = statistics.mean(total_values_filtered)
+        total_max = max(total_values_filtered)
+        stats_lines.append(f'Total Gas:  Sum: {total_sum:,}  |  Avg: {total_avg:,.0f}  |  Max: {total_max:,}')
+    
+    if avg_gas_values and any(v > 0 for v in avg_gas_values):
+        avg_values_filtered = [v for v in avg_gas_values if v > 0]
+        avg_mean = statistics.mean(avg_values_filtered)
+        avg_min = min(avg_values_filtered)
+        avg_max = max(avg_values_filtered)
+        stats_lines.append(f'Avg per Tx: Mean: {avg_mean:,.0f}  |  Min: {avg_min:,.0f}  |  Max: {avg_max:,.0f}')
+    
+    if stats_lines:
+        stats_text = '\n'.join(stats_lines)
+        ax1.text(0.02, 0.98, stats_text,
+                transform=ax1.transAxes,
+                fontsize=10,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Save the graph
+    ensure_output_dir()
+    output_file = os.path.join(OUTPUT_DIR, f'gas_used_graph_{batch_number if batch_number else "all"}.png')
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"✓ Gas used graph saved to: {output_file}")
+    
+    # Close the plot to free memory
+    plt.close()
+
+
+def generate_gas_used_graph(conn, batch_number):
+    """Generate Gas Used graph."""
+    print("\n--- Gas Used Graph ---")
+    print("Calculating gas usage intervals...")
+    total_gas_data, avg_gas_data = calculate_gas_used_intervals(conn, batch_number)
+    
+    print("Generating graph...")
+    plot_gas_used_graph(total_gas_data, avg_gas_data, batch_number)
 
 
 def main():
@@ -578,19 +725,21 @@ def main():
     print("\nSelect graph type:")
     print("  1. TPS Graph (Transactions Per Second)")
     print("  2. Latency Graph (Transaction Timing)")
-    print("  3. Gas Price Graph (Transaction vs Effective)")
-    print("  4. TPS + Latency Graphs")
-    print("  5. All Graphs (TPS + Latency + Gas Price)")
+    print("  3. Gas Price Graph (Effective Gas Price)")
+    print("  4. Gas Used Graph (Gas Consumption)")
+    print("  5. TPS + Latency Graphs")
+    print("  6. All Graphs (TPS + Latency + Gas Price + Gas Used)")
     print()
     
     try:
-        graph_choice = input("Enter choice (1-5, or press Enter for all): ").strip()
+        graph_choice = input("Enter choice (1-6, or press Enter for all): ").strip()
         
-        if graph_choice == "" or graph_choice == "5":
+        if graph_choice == "" or graph_choice == "6":
             print("\nGenerating all graphs...")
             generate_tps_graph(conn, selected_batch)
             generate_latency_graph(conn, selected_batch)
             generate_gas_price_graph(conn, selected_batch)
+            generate_gas_used_graph(conn, selected_batch)
         elif graph_choice == "1":
             generate_tps_graph(conn, selected_batch)
         elif graph_choice == "2":
@@ -598,6 +747,8 @@ def main():
         elif graph_choice == "3":
             generate_gas_price_graph(conn, selected_batch)
         elif graph_choice == "4":
+            generate_gas_used_graph(conn, selected_batch)
+        elif graph_choice == "5":
             print("\nGenerating TPS and Latency graphs...")
             generate_tps_graph(conn, selected_batch)
             generate_latency_graph(conn, selected_batch)
@@ -606,6 +757,7 @@ def main():
             generate_tps_graph(conn, selected_batch)
             generate_latency_graph(conn, selected_batch)
             generate_gas_price_graph(conn, selected_batch)
+            generate_gas_used_graph(conn, selected_batch)
     except (EOFError, KeyboardInterrupt):
         print("\nOperation cancelled.")
         conn.close()

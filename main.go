@@ -145,13 +145,14 @@ type Config struct {
 
 // ReceiptJob represents a receipt confirmation job
 type ReceiptJob struct {
-	DB        *Database
-	RPCURL    string
-	WSClient  *ethclient.Client
-	TxHash    string
-	Nonce     uint64
-	StartTime time.Time
-	WalletNum int
+	DB         *Database
+	RPCURL     string
+	WSClient   *ethclient.Client
+	TxHash     string
+	Nonce      uint64
+	StartTime  time.Time
+	WalletNum  int
+	RetryCount int // number of times this job has been retried due to timeout
 }
 
 func main() {
@@ -642,15 +643,17 @@ func dbWriterWorker(workerID int, jobChan <-chan *Transaction, db *Database, wg 
 }
 
 // startReceiptWorkerPool starts a pool of workers to process receipt confirmations
-func startReceiptWorkerPool(workerCount int, jobChan <-chan ReceiptJob, wg *sync.WaitGroup) {
+func startReceiptWorkerPool(workerCount int, jobChan chan ReceiptJob, wg *sync.WaitGroup) {
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go receiptWorker(i+1, jobChan, wg)
 	}
 }
 
+const maxReceiptRetries = 3
+
 // receiptWorker processes receipt confirmation jobs from the job channel
-func receiptWorker(workerID int, jobChan <-chan ReceiptJob, wg *sync.WaitGroup) {
+func receiptWorker(workerID int, jobChan chan ReceiptJob, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	var txSender *TransactionSender
@@ -672,7 +675,17 @@ func receiptWorker(workerID int, jobChan <-chan ReceiptJob, wg *sync.WaitGroup) 
 			currentRPCURL = job.RPCURL
 		}
 
-		processReceiptJob(workerID, txSender, job)
+		shouldRetry := processReceiptJob(workerID, txSender, job)
+		if shouldRetry {
+			if job.RetryCount < maxReceiptRetries {
+				job.RetryCount++
+				logWarn("  [Worker %d] Re-queuing tx (nonce %d) for retry %d/%d\n", workerID, job.Nonce, job.RetryCount, maxReceiptRetries)
+				jobChan <- job
+			} else {
+				logError("  [Worker %d] Tx (nonce %d) exceeded max retries (%d), marking failed\n", workerID, job.Nonce, maxReceiptRetries)
+				job.DB.UpdateTransactionStatus(job.TxHash, "failed", nil, 0, "", "timeout after max retries")
+			}
+		}
 	}
 
 	// Cleanup RPC connection
@@ -681,16 +694,23 @@ func receiptWorker(workerID int, jobChan <-chan ReceiptJob, wg *sync.WaitGroup) 
 	}
 }
 
-// processReceiptJob processes a single receipt confirmation job
-func processReceiptJob(workerID int, txSender *TransactionSender, job ReceiptJob) {
+// processReceiptJob processes a single receipt confirmation job.
+// Returns true if the job should be retried (i.e. it timed out).
+func processReceiptJob(workerID int, txSender *TransactionSender, job ReceiptJob) bool {
 	// Wait for receipt with timeout - use shared WebSocket if available
 	ctx := context.Background()
 	receipt, receiptErr := txSender.WaitForReceiptWithSharedWebSocket(ctx, job.WSClient, common.HexToHash(job.TxHash), 60*time.Second)
 
 	if receiptErr != nil {
-		// For failed receipts, update status but keep original execution_time from submission
+		// If this was a timeout, signal to the caller to re-queue the job
+		if strings.Contains(receiptErr.Error(), "timeout waiting for transaction receipt") {
+			logWarn("  [W%d] Tx (nonce %d): ⏱ timed out (retry %d/%d)\n", job.WalletNum, job.Nonce, job.RetryCount+1, maxReceiptRetries)
+			return true
+		}
+		// For non-timeout errors, mark as failed immediately
 		job.DB.UpdateTransactionStatus(job.TxHash, "failed", nil, 0, "", receiptErr.Error())
-		logWarn("  [W%d] Tx (nonce %d): ✗ timeout/error - %v\n", job.WalletNum, job.Nonce, receiptErr)
+		logWarn("  [W%d] Tx (nonce %d): ✗ error - %v\n", job.WalletNum, job.Nonce, receiptErr)
+		return false
 	} else {
 		// Get block header to retrieve block timestamp
 		blockHeader, err := txSender.client.HeaderByHash(ctx, receipt.BlockHash)
@@ -725,6 +745,7 @@ func processReceiptJob(workerID int, txSender *TransactionSender, job ReceiptJob
 			job.DB.UpdateTransactionStatus(job.TxHash, "failed", &confirmedAt, gasUsed, effectiveGasPrice, "transaction reverted")
 			logWarn("  [W%d] Tx (nonce %d): ✗ reverted (transaction failed on-chain)\n", job.WalletNum, job.Nonce)
 		}
+		return false
 	}
 }
 

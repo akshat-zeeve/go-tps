@@ -103,6 +103,8 @@ func (d *Database) InsertTransaction(tx *Transaction) (int64, error) {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
+	logDebug("[DB] INSERT tx_hash=%s status=%s nonce=%d wallet=%s\n", tx.TxHash, tx.Status, tx.Nonce, tx.WalletAddress)
+
 	result, err := d.db.Exec(query,
 		tx.BatchNumber,
 		tx.WalletAddress,
@@ -122,15 +124,20 @@ func (d *Database) InsertTransaction(tx *Transaction) (int64, error) {
 	)
 
 	if err != nil {
+		logDebug("[DB] INSERT FAILED tx_hash=%s error=%v\n", tx.TxHash, err)
 		return 0, fmt.Errorf("failed to insert transaction: %w", err)
 	}
 
-	return result.LastInsertId()
+	id, err := result.LastInsertId()
+	logDebug("[DB] INSERT OK tx_hash=%s id=%d\n", tx.TxHash, id)
+	return id, err
 }
 
 func (d *Database) UpdateTransactionStatus(txHash, status string, confirmedAt *time.Time, gasUsed uint64, effectiveGasPrice string, errMsg string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	logDebug("[DB] UPDATE tx_hash=%s status=%s gas_used=%d err=%q\n", txHash, status, gasUsed, errMsg)
 
 	query := `
 		UPDATE transactions 
@@ -140,9 +147,11 @@ func (d *Database) UpdateTransactionStatus(txHash, status string, confirmedAt *t
 
 	_, err := d.db.Exec(query, status, confirmedAt, gasUsed, effectiveGasPrice, errMsg, txHash)
 	if err != nil {
+		logDebug("[DB] UPDATE FAILED tx_hash=%s error=%v\n", txHash, err)
 		return fmt.Errorf("failed to update transaction: %w", err)
 	}
 
+	logDebug("[DB] UPDATE OK tx_hash=%s\n", txHash)
 	return nil
 }
 

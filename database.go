@@ -124,7 +124,7 @@ func (d *Database) InsertTransaction(tx *Transaction) (int64, error) {
 	)
 
 	if err != nil {
-		logDebug("[DB] INSERT FAILED tx_hash=%s error=%v\n", tx.TxHash, err)
+		logError("[DB] INSERT FAILED tx_hash=%s error=%v\n", tx.TxHash, err)
 		return 0, fmt.Errorf("failed to insert transaction: %w", err)
 	}
 
@@ -147,7 +147,7 @@ func (d *Database) UpdateTransactionStatus(txHash, status string, confirmedAt *t
 
 	_, err := d.db.Exec(query, status, confirmedAt, gasUsed, effectiveGasPrice, errMsg, txHash)
 	if err != nil {
-		logDebug("[DB] UPDATE FAILED tx_hash=%s error=%v\n", txHash, err)
+		logError("[DB] UPDATE FAILED tx_hash=%s error=%v\n", txHash, err)
 		return fmt.Errorf("failed to update transaction: %w", err)
 	}
 

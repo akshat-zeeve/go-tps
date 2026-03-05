@@ -408,10 +408,12 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 	startReceiptWorkerPool(config.ReceiptWorkers, receiptJobChan, wg)
 	logInfo("📋 Started %d receipt confirmation workers\n", config.ReceiptWorkers)
 
-	// Create DB writer worker pool (single worker keeps SQLite write-serialized)
-	dbWriteChan := make(chan *Transaction, config.WalletCount*config.TxPerWallet)
+	// Create DB writer worker pool (single worker keeps SQLite write-serialized).
+	// The DB writer also dispatches receipt jobs AFTER each INSERT to prevent
+	// the UPDATE-before-INSERT race condition.
+	dbWriteChan := make(chan DBWriteJob, config.WalletCount*config.TxPerWallet)
 	var dbWriteWG sync.WaitGroup
-	startDBWriterPool(config.ReceiptWorkers, dbWriteChan, db, &dbWriteWG)
+	startDBWriterPool(config.ReceiptWorkers, dbWriteChan, receiptJobChan, db, &dbWriteWG)
 	logInfo("📋 Started %d DB writer workers\n\n", config.ReceiptWorkers)
 
 	// Parse configuration values
@@ -492,14 +494,11 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 					// Print failure reason
 					logError("  [W%d] Tx %d FAILED (nonce %d): %v\n", idx+1, txIdx+1, req.Nonce, err)
 
-					// Queue DB write via worker channel
-					dbWriteChan <- dbTx
+					// Queue DB write only (no receipt needed for submission failures)
+					dbWriteChan <- DBWriteJob{Tx: dbTx}
 				} else {
 					dbTx.TxHash = result.TxHash
 					dbTx.Status = "pending"
-
-					// Queue DB write via worker channel
-					dbWriteChan <- dbTx
 
 					logDebug("  [W%d] Tx %d sent (nonce %d): %s\n", idx+1, txIdx+1, req.Nonce, result.TxHash[:16]+"...")
 
@@ -508,15 +507,20 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 					totalSuccessful++
 					mu.Unlock()
 
-					// Send job to receipt worker pool (non-blocking)
-					receiptJobChan <- ReceiptJob{
-						DB:        db,
-						RPCURL:    config.RPCURL,
-						WSClient:  wsClient,
-						TxHash:    result.TxHash,
-						Nonce:     req.Nonce,
-						StartTime: result.SubmittedAt,
-						WalletNum: idx + 1,
+					// Queue DB write + receipt job together.
+					// The DB writer will INSERT first, then dispatch the receipt job,
+					// ensuring UPDATE never runs before INSERT.
+					dbWriteChan <- DBWriteJob{
+						Tx: dbTx,
+						ReceiptJob: &ReceiptJob{
+							DB:        db,
+							RPCURL:    config.RPCURL,
+							WSClient:  wsClient,
+							TxHash:    result.TxHash,
+							Nonce:     req.Nonce,
+							StartTime: result.SubmittedAt,
+							WalletNum: idx + 1,
+						},
 					}
 				}
 			}
@@ -623,21 +627,35 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 	fmt.Println("\n✓ Transaction submission launched in background")
 }
 
+// DBWriteJob bundles a transaction insert with an optional follow-up receipt job.
+// The receipt job (when non-nil) is dispatched to receiptJobChan only AFTER
+// the INSERT succeeds, preventing the UPDATE-before-INSERT race condition.
+type DBWriteJob struct {
+	Tx         *Transaction
+	ReceiptJob *ReceiptJob // nil for failed/no-receipt transactions
+}
+
 // startDBWriterPool starts a pool of workers that serialize inserts into SQLite.
 // Use workerCount=1 to avoid "database is locked" errors with SQLite.
-func startDBWriterPool(workerCount int, jobChan <-chan *Transaction, db *Database, wg *sync.WaitGroup) {
+func startDBWriterPool(workerCount int, jobChan <-chan DBWriteJob, receiptJobChan chan ReceiptJob, db *Database, wg *sync.WaitGroup) {
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go dbWriterWorker(i+1, jobChan, db, wg)
+		go dbWriterWorker(i+1, jobChan, receiptJobChan, db, wg)
 	}
 }
 
-// dbWriterWorker drains the DB write channel, inserting each transaction record.
-func dbWriterWorker(workerID int, jobChan <-chan *Transaction, db *Database, wg *sync.WaitGroup) {
+// dbWriterWorker drains the DB write channel, inserting each transaction record,
+// then forwarding any associated receipt job to the receipt worker pool.
+func dbWriterWorker(workerID int, jobChan <-chan DBWriteJob, receiptJobChan chan ReceiptJob, db *Database, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for tx := range jobChan {
-		if _, err := db.InsertTransaction(tx); err != nil {
+	for job := range jobChan {
+		if _, err := db.InsertTransaction(job.Tx); err != nil {
 			logWarn("[DBWriter %d] Could not save transaction to DB: %v\n", workerID, err)
+			continue
+		}
+		// Only dispatch the receipt job AFTER the INSERT is confirmed
+		if job.ReceiptJob != nil {
+			receiptJobChan <- *job.ReceiptJob
 		}
 	}
 }

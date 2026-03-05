@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"fmt"
 
@@ -15,6 +16,7 @@ type Wallet struct {
 	Address        common.Address
 	PrivateKey     *ecdsa.PrivateKey
 	DerivationPath string
+	Nonce          uint64
 }
 
 // GenerateMnemonic generates a new mnemonic phrase
@@ -32,19 +34,21 @@ func GenerateMnemonic() (string, error) {
 	return mnemonic, nil
 }
 
-// DeriveWalletsFromMnemonic derives multiple wallets from a single mnemonic
-func DeriveWalletsFromMnemonic(mnemonic string, count int) ([]*Wallet, error) {
+// DeriveWalletsFromMnemonic derives multiple wallets from a single mnemonic.
+// If t is non-nil each wallet's starting nonce is pre-fetched from the RPC.
+func DeriveWalletsFromMnemonic(mnemonic string, count int, t *TransactionSender) ([]*Wallet, error) {
 	wallet, err := hdwallet.NewFromMnemonic(mnemonic)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HD wallet: %w", err)
 	}
 
+	ctx := context.Background()
 	wallets := make([]*Wallet, 0, count)
 
 	for i := 0; i < count; i++ {
 		// Standard Ethereum derivation path: m/44'/60'/0'/0/i
 		path := hdwallet.MustParseDerivationPath(fmt.Sprintf("m/44'/60'/0'/0/%d", i))
-		
+
 		account, err := wallet.Derive(path, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive account %d: %w", i, err)
@@ -55,10 +59,19 @@ func DeriveWalletsFromMnemonic(mnemonic string, count int) ([]*Wallet, error) {
 			return nil, fmt.Errorf("failed to get private key for account %d: %w", i, err)
 		}
 
+		var nonce uint64
+		if t != nil {
+			nonce, err = t.GetNonce(ctx, account.Address)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get nonce for account %d: %w", i, err)
+			}
+		}
+
 		w := &Wallet{
 			Address:        account.Address,
 			PrivateKey:     privateKey,
 			DerivationPath: path.String(),
+			Nonce:          nonce,
 		}
 
 		wallets = append(wallets, w)
@@ -80,7 +93,7 @@ func CreateWalletsFromMultipleMnemonics(mnemonicCount, walletsPerMnemonic int) (
 
 		mnemonics = append(mnemonics, mnemonic)
 
-		wallets, err := DeriveWalletsFromMnemonic(mnemonic, walletsPerMnemonic)
+		wallets, err := DeriveWalletsFromMnemonic(mnemonic, walletsPerMnemonic, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive wallets from mnemonic %d: %w", i, err)
 		}

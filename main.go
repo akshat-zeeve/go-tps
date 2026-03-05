@@ -173,7 +173,7 @@ func main() {
 	// Generate wallets from single mnemonic
 	logInfo("Deriving %d wallets from mnemonic...\n", config.WalletCount)
 
-	wallets, err := DeriveWalletsFromMnemonic(mnemonic, config.WalletCount)
+	wallets, err := DeriveWalletsFromMnemonic(mnemonic, config.WalletCount, txSender)
 	if err != nil {
 		logError("Error deriving wallets: %v\n", err)
 		os.Exit(1)

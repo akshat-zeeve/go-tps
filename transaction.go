@@ -291,10 +291,7 @@ func (ts *TransactionSender) PrepareBatchTransactions(
 	count int,
 ) ([]*TxRequest, error) {
 	// Get starting nonce
-	startNonce, err := ts.GetNonce(ctx, wallet.Address)
-	if err != nil {
-		return nil, err
-	}
+	startNonce := wallet.Nonce
 
 	// Get gas price
 	gasPrice, err := ts.GetGasPrice(ctx)
@@ -315,6 +312,6 @@ func (ts *TransactionSender) PrepareBatchTransactions(
 		}
 		requests = append(requests, req)
 	}
-
+	wallet.Nonce += uint64(count)
 	return requests, nil
 }

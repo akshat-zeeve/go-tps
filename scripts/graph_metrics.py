@@ -280,7 +280,7 @@ def plot_latency_graph(execution_latency, confirmation_latency, batch_number=Non
     fig, ax = plt.subplots(figsize=(14, 7))
     
     # Plot both lines
-    ax.plot(all_times, execution_values, label='Execution Latency', 
+    ax.plot(all_times, execution_values, label='Submission Latency', 
             color='#FF9800', linewidth=2, marker='o', markersize=4)
     ax.plot(all_times, confirmation_values, label='Confirmation Latency',
             color='#9C27B0', linewidth=2, marker='s', markersize=4)
@@ -315,7 +315,7 @@ def plot_latency_graph(execution_latency, confirmation_latency, batch_number=Non
             exec_avg = statistics.mean(exec_values_filtered)
             exec_min = min(exec_values_filtered)
             exec_max = max(exec_values_filtered)
-            stats_lines.append(f'Execution:    Avg: {exec_avg:.2f} ms  |  Min: {exec_min:.2f} ms  |  Max: {exec_max:.2f} ms')
+            stats_lines.append(f'Submission:    Avg: {exec_avg:.2f} ms  |  Min: {exec_min:.2f} ms  |  Max: {exec_max:.2f} ms')
         
         if confirmation_values and any(v > 0 for v in confirmation_values):
             conf_values_filtered = [v for v in confirmation_values if v > 0]
@@ -583,14 +583,15 @@ def generate_gas_price_graph(conn, batch_number):
 
 def calculate_gas_used_intervals(conn, batch_number=None):
     """
-    Calculate total and average gas used over time intervals.
-    
+    Calculate gas used per second over time intervals.
+    Each interval value = total gas in that interval / INTERVAL_SECONDS.
+
     Returns:
-        total_gas_used: dict of {timestamp: total_gas}
-        avg_gas_used: dict of {timestamp: avg_gas}
+        gas_per_second: dict of {timestamp: gas_per_second}
+        all_gas_values: list of all raw per-transaction gas values (for global stats)
     """
     cursor = conn.cursor()
-    
+
     # Query to get gas used from receipts
     if batch_number:
         query = """
@@ -607,106 +608,105 @@ def calculate_gas_used_intervals(conn, batch_number=None):
             ORDER BY submitted_at
         """
         cursor.execute(query)
-    
+
     rows = cursor.fetchall()
-    
+
     if not rows:
         print("No transactions found.")
-        return {}, {}
-    
+        return {}, []
+
     # Group gas usage by time intervals
-    gas_used_intervals = defaultdict(list)
-    
+    gas_used_intervals = defaultdict(int)
+    all_gas_values = []
+
     for row in rows:
         submitted_str, gas_used, status = row
-        
+
         try:
             submitted_dt = parse_timestamp(submitted_str)
             # Round down to nearest interval (INTERVAL_SECONDS)
             interval_start = submitted_dt.replace(microsecond=0)
             interval_start = interval_start - timedelta(seconds=interval_start.second % INTERVAL_SECONDS)
-            
+
             # Gas used from receipt (only for successful transactions)
             if gas_used is not None and status == 'success':
                 try:
                     gas_used_int = int(gas_used)
                     if gas_used_int > 0:
-                        gas_used_intervals[interval_start].append(gas_used_int)
+                        gas_used_intervals[interval_start] += gas_used_int
+                        all_gas_values.append(gas_used_int)
                 except (ValueError, TypeError):
                     pass
         except (ValueError, TypeError):
             continue
-    
-    # Calculate total and average gas for each interval
-    total_gas = {ts: sum(gas_list) for ts, gas_list in gas_used_intervals.items()}
-    avg_gas = {ts: statistics.mean(gas_list) if gas_list else 0 
-               for ts, gas_list in gas_used_intervals.items()}
-    
-    return total_gas, avg_gas
+
+    # Gas per second = total gas in interval / interval length
+    gas_per_second = {ts: total / INTERVAL_SECONDS
+                      for ts, total in gas_used_intervals.items()}
+
+    return gas_per_second, all_gas_values
 
 
-def plot_gas_used_graph(total_gas_data, avg_gas_data, batch_number=None):
-    """Create and save the gas used graph."""
-    if not total_gas_data:
+def plot_gas_used_graph(gas_per_second_data, all_gas_values=None, batch_number=None):
+    """Create and save the gas used graph (gas used per second per interval)."""
+    if not gas_per_second_data:
         print("No gas usage data to plot.")
         return
-    
+
     # Prepare data for plotting
-    all_times = sorted(total_gas_data.keys())
-    
-    total_gas_values = [total_gas_data.get(t, 0) for t in all_times]
-    
+    all_times = sorted(gas_per_second_data.keys())
+    gps_values = [gas_per_second_data.get(t, 0) for t in all_times]
+
     # Create the plot
     fig, ax = plt.subplots(figsize=(14, 7))
-    
-    # Plot total gas used
-    ax.plot(all_times, total_gas_values, label='Total Gas Used', 
+
+    # Plot gas per second
+    ax.plot(all_times, gps_values, label='L2 Gas Used Per Second',
             color='#2196F3', linewidth=2, marker='o', markersize=4)
-    
+
     # Formatting
     ax.set_xlabel('Time', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Total Gas Used', fontsize=12, fontweight='bold')
-    
-    title = f'Gas Usage Over Time ({INTERVAL_SECONDS}s intervals)'
+    ax.set_ylabel('L2 Gas Used Per Second', fontsize=12, fontweight='bold')
+
+    title = f'L2 Gas Used Per Second Over Time ({INTERVAL_SECONDS}s intervals)'
     if batch_number:
         title += f'\nBatch: {batch_number}'
     ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
-    
+
     # Format x-axis
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     plt.xticks(rotation=45, ha='right')
-    
+
     # Grid
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
-    
+
     # Legend
     ax.legend(loc='best', fontsize=11, framealpha=0.9)
-    
+
     # Add statistics text box
-    if total_gas_values and any(v > 0 for v in total_gas_values):
-        total_values_filtered = [v for v in total_gas_values if v > 0]
-        total_sum = sum(total_values_filtered)
-        total_avg = statistics.mean(total_values_filtered)
-        total_min = min(total_values_filtered)
-        total_max = max(total_values_filtered)
-        
-        stats_text = f'Sum: {total_sum:,}  |  Avg: {total_avg:,.0f}  |  Min: {total_min:,.0f}  |  Max: {total_max:,}'
-        ax.text(0.02, 0.98, stats_text,
+    nonzero = [v for v in gps_values if v > 0]
+    if nonzero:
+        g_avg = statistics.mean(nonzero)
+        g_min = min(nonzero)
+        g_max = max(nonzero)
+        stats_text = f'Avg: {g_avg:,.0f} gas/s\nMin: {g_min:,.0f} gas/s\nMax: {g_max:,.0f} gas/s'
+        ax.text(0.98, 0.02, stats_text,
                 transform=ax.transAxes,
                 fontsize=10,
-                verticalalignment='top',
+                verticalalignment='bottom',
+                horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
-    
+
     plt.tight_layout()
-    
+
     # Save the graph
     ensure_output_dir()
     output_file = os.path.join(OUTPUT_DIR, f'gas_used_graph_{batch_number if batch_number else "all"}.png')
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"✓ Gas used graph saved to: {output_file}")
-    
+
     # Close the plot to free memory
     plt.close()
 
@@ -715,10 +715,131 @@ def generate_gas_used_graph(conn, batch_number):
     """Generate Gas Used graph."""
     print("\n--- Gas Used Graph ---")
     print("Calculating gas usage intervals...")
-    total_gas_data, avg_gas_data = calculate_gas_used_intervals(conn, batch_number)
-    
+    gas_per_second_data, all_gas_values = calculate_gas_used_intervals(conn, batch_number)
+
     print("Generating graph...")
-    plot_gas_used_graph(total_gas_data, avg_gas_data, batch_number)
+    plot_gas_used_graph(gas_per_second_data, all_gas_values, batch_number)
+
+
+def calculate_success_failure_intervals(conn, batch_number=None):
+    """
+    Count successful and failed transactions over time intervals.
+
+    Returns:
+        success_data: dict of {timestamp: count}
+        failure_data: dict of {timestamp: count}
+    """
+    cursor = conn.cursor()
+
+    if batch_number:
+        query = """
+            SELECT submitted_at, status
+            FROM transactions
+            WHERE batch_number = ?
+            ORDER BY submitted_at
+        """
+        cursor.execute(query, (batch_number,))
+    else:
+        query = """
+            SELECT submitted_at, status
+            FROM transactions
+            ORDER BY submitted_at
+        """
+        cursor.execute(query)
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        print("No transactions found.")
+        return {}, {}
+
+    success_intervals = defaultdict(int)
+    failure_intervals = defaultdict(int)
+
+    for submitted_str, status in rows:
+        try:
+            submitted_dt = parse_timestamp(submitted_str)
+            interval_start = submitted_dt.replace(microsecond=0)
+            interval_start = interval_start - timedelta(seconds=interval_start.second % INTERVAL_SECONDS)
+
+            if status == 'success':
+                success_intervals[interval_start] += 1
+            elif status in ('failed', 'error'):
+                failure_intervals[interval_start] += 1
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+    return dict(success_intervals), dict(failure_intervals)
+
+
+def plot_success_failure_graph(success_data, failure_data, batch_number=None):
+    """Create and save the success/failure count graph."""
+    if not success_data and not failure_data:
+        print("No success/failure data to plot.")
+        return
+
+    all_times = sorted(set(list(success_data.keys()) + list(failure_data.keys())))
+    success_values = [success_data.get(t, 0) for t in all_times]
+    failure_values = [failure_data.get(t, 0) for t in all_times]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    ax.plot(all_times, success_values, label='Success',
+            color='#4CAF50', linewidth=2, marker='o', markersize=4)
+    ax.plot(all_times, failure_values, label='Failed',
+            color='#F44336', linewidth=2, marker='s', markersize=4)
+
+    ax.set_xlabel('Time', fontsize=12, fontweight='bold')
+    ax.set_ylabel(f'Transaction Count (per {INTERVAL_SECONDS}s)', fontsize=12, fontweight='bold')
+
+    title = f'Success vs Failure Over Time ({INTERVAL_SECONDS}s intervals)'
+    if batch_number:
+        title += f'\nBatch: {batch_number}'
+    ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.xticks(rotation=45, ha='right')
+
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_axisbelow(True)
+    ax.legend(loc='best', fontsize=11, framealpha=0.9)
+
+    # Stats box
+    total_success = sum(success_values)
+    total_failure = sum(failure_values)
+    total = total_success + total_failure
+    success_pct = (total_success / total * 100) if total else 0
+    failure_pct = (total_failure / total * 100) if total else 0
+    stats_text = (
+        f'Total Success: {total_success:,} ({success_pct:.1f}%)\n'
+        f'Total Failed:  {total_failure:,} ({failure_pct:.1f}%)\n'
+        f'Total:         {total:,}'
+    )
+    ax.text(0.98, 0.98, stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment='top',
+            horizontalalignment='right',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+
+    ensure_output_dir()
+    output_file = os.path.join(OUTPUT_DIR, f'success_failure_graph_{batch_number if batch_number else "all"}.png')
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"✓ Success/Failure graph saved to: {output_file}")
+    plt.close()
+
+
+def generate_success_failure_graph(conn, batch_number):
+    """Generate Success/Failure graph."""
+    print("\n--- Success/Failure Graph ---")
+    print("Calculating success/failure intervals...")
+    success_data, failure_data = calculate_success_failure_intervals(conn, batch_number)
+
+    print("Generating graph...")
+    plot_success_failure_graph(success_data, failure_data, batch_number)
 
 
 def main():
@@ -746,19 +867,21 @@ def main():
     print("  2. Latency Graph (Transaction Timing)")
     print("  3. Gas Price Graph (Effective Gas Price)")
     print("  4. Gas Used Graph (Gas Consumption)")
-    print("  5. TPS + Latency Graphs")
-    print("  6. All Graphs (TPS + Latency + Gas Price + Gas Used)")
+    print("  5. Success/Failure Graph")
+    print("  6. TPS + Latency Graphs")
+    print("  7. All Graphs")
     print()
-    
+
     try:
-        graph_choice = input("Enter choice (1-6, or press Enter for all): ").strip()
-        
-        if graph_choice == "" or graph_choice == "6":
+        graph_choice = input("Enter choice (1-7, or press Enter for all): ").strip()
+
+        if graph_choice == "" or graph_choice == "7":
             print("\nGenerating all graphs...")
             generate_tps_graph(conn, selected_batch)
             generate_latency_graph(conn, selected_batch)
             generate_gas_price_graph(conn, selected_batch)
             generate_gas_used_graph(conn, selected_batch)
+            generate_success_failure_graph(conn, selected_batch)
         elif graph_choice == "1":
             generate_tps_graph(conn, selected_batch)
         elif graph_choice == "2":
@@ -768,6 +891,8 @@ def main():
         elif graph_choice == "4":
             generate_gas_used_graph(conn, selected_batch)
         elif graph_choice == "5":
+            generate_success_failure_graph(conn, selected_batch)
+        elif graph_choice == "6":
             print("\nGenerating TPS and Latency graphs...")
             generate_tps_graph(conn, selected_batch)
             generate_latency_graph(conn, selected_batch)
@@ -777,6 +902,7 @@ def main():
             generate_latency_graph(conn, selected_batch)
             generate_gas_price_graph(conn, selected_batch)
             generate_gas_used_graph(conn, selected_batch)
+            generate_success_failure_graph(conn, selected_batch)
     except (EOFError, KeyboardInterrupt):
         print("\nOperation cancelled.")
         conn.close()

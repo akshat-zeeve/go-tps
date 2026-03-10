@@ -25,11 +25,6 @@ def analyze_database(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    stats = {
-        'database_name': Path(db_path).name,
-        'db_path': db_path
-    }
-    
     # ===== BASIC COUNTS =====
     # Total transactions and status breakdown
     cursor.execute("""
@@ -238,14 +233,6 @@ def analyze_database(db_path):
     else:
         stats['avg_cost_per_tx_wei'] = 0
         stats['avg_cost_per_tx_eth'] = 0
-    
-    # ===== BATCH INFORMATION =====
-    cursor.execute("SELECT COUNT(DISTINCT batch_number) FROM transactions")
-    stats['total_batches'] = cursor.fetchone()[0] or 0
-    
-    # ===== WALLET INFORMATION =====
-    cursor.execute("SELECT COUNT(DISTINCT wallet_address) FROM transactions")
-    stats['unique_wallets'] = cursor.fetchone()[0] or 0
     
     conn.close()
     

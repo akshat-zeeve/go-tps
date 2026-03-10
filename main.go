@@ -536,14 +536,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 	logInfo("  - Value per tx: %s wei\n", value.String())
 	logInfo("\n")
 
-	// Create and send transactions
-	totalTransactions := 0
-	totalSuccessful := 0
-	totalFailed := 0
-	startTime := time.Now()
-
 	// Use mutex for thread-safe counter updates
-	var mu sync.Mutex
 	var wgSubmit sync.WaitGroup // Wait for transaction submissions only
 	// Receipt confirmations happen in background, we don't wait for them
 
@@ -593,10 +586,6 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 				if err != nil {
 					dbTx.Status = "failed"
 					dbTx.Error = err.Error()
-					mu.Lock()
-					totalFailed++
-					totalTransactions++
-					mu.Unlock()
 
 					// Print failure reason
 					logError("  [W%d] Tx %d FAILED (nonce %d): %v\n", idx+1, txIdx+1, req.Nonce, err)
@@ -608,11 +597,6 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 					dbTx.Status = "pending"
 
 					logDebug("  [W%d] Tx %d sent (nonce %d): %s\n", idx+1, txIdx+1, req.Nonce, result.TxHash[:16]+"...")
-
-					mu.Lock()
-					totalTransactions++
-					totalSuccessful++
-					mu.Unlock()
 
 					// Queue DB write + receipt job together.
 					// The DB writer will INSERT first, then dispatch the receipt job,
@@ -652,8 +636,6 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 	fmt.Println("✓ Database writes queued (processing in background)")
 	fmt.Println("✓ Receipt confirmations queued (processing in background)")
 
-	totalTime := time.Since(startTime)
-
 	// Launch background goroutine to print summary (non-blocking)
 	// This allows the next iteration to start immediately in loop mode
 	go func() {
@@ -662,53 +644,6 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 		fmt.Println("=== Execution Summary ===")
 		fmt.Println()
 		fmt.Printf("Batch Number: %s\n", batchNumber)
-
-		// Lock to safely read counters
-		mu.Lock()
-		submitted := totalTransactions
-		failed := totalFailed
-		successful := totalSuccessful
-		mu.Unlock()
-
-		fmt.Printf("Total transactions submitted: %d\n", submitted)
-		fmt.Printf("Successful: %d\n", successful)
-		fmt.Printf("Failed: %d\n", failed)
-		fmt.Printf("Total execution time: %.2f seconds\n", totalTime.Seconds())
-		if submitted > 0 {
-			fmt.Printf("Average time per transaction: %.2f ms\n",
-				totalTime.Seconds()*1000/float64(submitted))
-			fmt.Printf("Transactions per second: %.2f\n",
-				float64(submitted)/totalTime.Seconds())
-		}
-		fmt.Println()
-
-		// Display failed transactions if any
-		if failed > 0 {
-			fmt.Println("=== Failed Transactions ===")
-			fmt.Println()
-
-			// Query failed transactions from database
-			failures, err := db.GetFailedTransactions(batchNumber, 20)
-
-			if err == nil && len(failures) > 0 {
-				for i, fail := range failures {
-					walletShort := fail["wallet_address"]
-					if len(walletShort) > 10 {
-						walletShort = walletShort[:10] + "..."
-					}
-					fmt.Printf("  %d. Wallet %s (nonce %s): %s\n",
-						i+1, walletShort, fail["nonce"], fail["error"])
-				}
-				if failed > 20 {
-					fmt.Printf("  ... and %d more (showing first 20)\n", failed-20)
-				}
-			} else if err != nil {
-				fmt.Printf("  Could not retrieve failed transactions: %v\n", err)
-			} else if len(failures) == 0 && failed > 0 {
-				fmt.Println("  (Failed transactions not yet recorded in database)")
-			}
-			fmt.Println()
-		}
 
 		// Get database statistics
 		stats, err := db.GetTransactionStats()

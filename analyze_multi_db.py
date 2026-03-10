@@ -283,9 +283,7 @@ def generate_csv(databases, output_file='db_summary.csv'):
     
     # Define column order for CSV
     columns = [
-        # Basic Info
-        'database_name',
-        'db_path',
+
         
         # Transaction Counts
         'total_transactions',

@@ -34,15 +34,28 @@ type Database struct {
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// Use SQLite with WAL mode for better concurrency and performance
+	// Also set busy_timeout to handle lock contention
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=-64000", dbPath)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Set connection pool settings for better performance
+	db.SetMaxOpenConns(25)   // Limit concurrent connections
+	db.SetMaxIdleConns(5)    // Keep idle connections
+	db.SetConnMaxLifetime(0) // No limit on connection lifetime
 
 	// Create tables
 	if err := createTables(db); err != nil {
 		db.Close()
 		return nil, err
+	}
+
+	// Optimize SQLite settings
+	if err := optimizeDatabase(db); err != nil {
+		return nil, fmt.Errorf("failed to optimize database: %w", err)
 	}
 
 	return &Database{db: db}, nil
@@ -91,9 +104,28 @@ func createTables(db *sql.DB) error {
 	return nil
 }
 
+// optimizeDatabase sets pragmas for optimal SQLite performance
+func optimizeDatabase(db *sql.DB) error {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",        // Write-Ahead Logging for concurrency
+		"PRAGMA synchronous=NORMAL",      // Faster writes, still safe
+		"PRAGMA cache_size=-64000",       // 64MB cache
+		"PRAGMA temp_store=MEMORY",       // Use memory for temp tables
+		"PRAGMA mmap_size=268435456",     // 256MB memory-mapped I/O
+		"PRAGMA page_size=4096",          // 4KB page size
+		"PRAGMA auto_vacuum=INCREMENTAL", // Incremental vacuum
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to execute %s: %w", pragma, err)
+		}
+	}
+
+	return nil
+}
+
 func (d *Database) InsertTransaction(tx *Transaction) (int64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	query := `
 		INSERT INTO transactions (
@@ -134,8 +166,6 @@ func (d *Database) InsertTransaction(tx *Transaction) (int64, error) {
 }
 
 func (d *Database) UpdateTransactionStatus(txHash, status string, confirmedAt *time.Time, gasUsed uint64, effectiveGasPrice string, errMsg string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	logDebug("[DB] UPDATE tx_hash=%s status=%s gas_used=%d err=%q\n", txHash, status, gasUsed, errMsg)
 
@@ -422,4 +452,61 @@ func (d *Database) GetPendingTransactions() ([]*Transaction, error) {
 		txns = append(txns, tx)
 	}
 	return txns, rows.Err()
+}
+
+// CleanupOldRecords removes transactions older than the specified number of days
+// Returns the number of records deleted
+func (d *Database) CleanupOldRecords(retentionDays int) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	cutoffDate := time.Now().AddDate(0, 0, -retentionDays)
+
+	query := `
+DELETE FROM transactions 
+WHERE submitted_at < ?
+`
+
+	result, err := d.db.Exec(query, cutoffDate)
+	if err != nil {
+		return 0, fmt.Errorf("failed to cleanup old records: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	// Run incremental vacuum to reclaim space
+	if rowsAffected > 0 {
+		_, _ = d.db.Exec("PRAGMA incremental_vacuum")
+		fmt.Printf("✓ Cleaned up %d old records (retention: %d days)\n", rowsAffected, retentionDays)
+	}
+
+	return rowsAffected, nil
+}
+
+// GetDatabaseSize returns the size of the database in bytes
+func (d *Database) GetDatabaseSize() (map[string]interface{}, error) {
+	var pageCount, pageSize int64
+
+	err := d.db.QueryRow("PRAGMA page_count").Scan(&pageCount)
+	if err != nil {
+		return nil, err
+	}
+
+	err = d.db.QueryRow("PRAGMA page_size").Scan(&pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	sizeBytes := pageCount * pageSize
+	sizeMB := float64(sizeBytes) / (1024 * 1024)
+
+	return map[string]interface{}{
+		"size_bytes": sizeBytes,
+		"size_mb":    fmt.Sprintf("%.2f", sizeMB),
+		"page_count": pageCount,
+		"page_size":  pageSize,
+	}, nil
 }

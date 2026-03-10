@@ -649,25 +649,18 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 		}(walletIdx, wallet)
 	}
 
-	// Use a done channel to ensure the summary goroutine completes before returning
-	// This prevents goroutine leaks in loop mode
-	summaryDone := make(chan struct{})
+	// Wait for transaction submissions to complete
+	fmt.Println("\nWaiting for all transactions to be submitted...")
+	wgSubmit.Wait()
+	fmt.Println("✓ All transactions submitted")
+	fmt.Println("✓ Database writes queued (processing in background)")
+	fmt.Println("✓ Receipt confirmations queued (processing in background)")
 
-	// Launch background goroutine to wait for submissions and print summary
+	totalTime := time.Since(startTime)
+
+	// Launch background goroutine to print summary (non-blocking)
+	// This allows the next iteration to start immediately in loop mode
 	go func() {
-		defer close(summaryDone)
-
-		fmt.Println("\nWaiting for all transactions to be submitted...")
-		wgSubmit.Wait()
-		fmt.Println("✓ All transactions submitted")
-		fmt.Println("✓ Database writes queued (processing in background)")
-		fmt.Println("✓ Receipt confirmations queued (processing in background)")
-
-		// Note: We don't close channels here anymore - they're reused across iterations
-		// DB writes and receipt confirmations happen asynchronously in the worker pools
-
-		totalTime := time.Since(startTime)
-
 		fmt.Println()
 		fmt.Println(strings.Repeat("=", 60))
 		fmt.Println("=== Execution Summary ===")
@@ -739,6 +732,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 		fmt.Println("Note: DB writes and receipt confirmations continue in background")
 	}()
 
+	// Return immediately after transactions are submitted (don't wait for summary)
 }
 
 // DBWriteJob bundles a transaction insert with an optional follow-up receipt job.

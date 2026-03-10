@@ -55,7 +55,7 @@ def analyze_database(db_path):
         stats['failure_rate_percent'] = 0
     
     # ===== SUBMISSION LATENCY =====
-    # Time between first and last submission (execution_time is confirmation latency)
+    # Time between first and last submission (execution_time is execution latency)
     cursor.execute("""
         SELECT 
             MIN(submitted_at) as first_submission,
@@ -69,25 +69,36 @@ def analyze_database(db_path):
     stats['last_submission_time'] = row[1]
     stats['submission_window_seconds'] = round(row[2], 3) if row[2] else 0
     
-    # ===== CONFIRMATION LATENCY (execution_time field) =====
+    # ===== EXECUTION LATENCY (execution_time field) =====
     # execution_time is in milliseconds - time from submission to confirmation
     cursor.execute("""
         SELECT 
-            MIN(execution_time) as min_confirmation_latency_ms,
-            MAX(execution_time) as max_confirmation_latency_ms,
-            AVG(execution_time) as avg_confirmation_latency_ms
+            MIN(execution_time) as min_execution_latency_ms,
+            MAX(execution_time) as max_execution_latency_ms,
+            AVG(execution_time) as avg_execution_latency_ms
         FROM transactions
         WHERE execution_time IS NOT NULL AND execution_time > 0
     """)
     row = cursor.fetchone()
-    stats['min_confirmation_latency_ms'] = round(row[0], 3) if row[0] else 0
-    stats['max_confirmation_latency_ms'] = round(row[1], 3) if row[1] else 0
-    stats['avg_confirmation_latency_ms'] = round(row[2], 3) if row[2] else 0
+    stats['min_execution_latency_ms'] = round(row[0], 3) if row[0] else 0
+    stats['max_execution_latency_ms'] = round(row[1], 3) if row[1] else 0
+    stats['avg_execution_latency_ms'] = round(row[2], 3) if row[2] else 0
     
-    # Convert to seconds for better readability
-    stats['min_confirmation_latency_sec'] = round(stats['min_confirmation_latency_ms'] / 1000, 3)
-    stats['max_confirmation_latency_sec'] = round(stats['max_confirmation_latency_ms'] / 1000, 3)
-    stats['avg_confirmation_latency_sec'] = round(stats['avg_confirmation_latency_ms'] / 1000, 3)
+    # ===== CONFIRMATION LATENCY (confirmed_at - submitted_at) =====
+    # Time from submission to confirmation in milliseconds
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as confirmed_count,
+            MIN((JULIANDAY(confirmed_at) - JULIANDAY(submitted_at)) * 86400 * 1000) as min_confirmation_latency_ms,
+            MAX((JULIANDAY(confirmed_at) - JULIANDAY(submitted_at)) * 86400 * 1000) as max_confirmation_latency_ms,
+            AVG((JULIANDAY(confirmed_at) - JULIANDAY(submitted_at)) * 86400 * 1000) as avg_confirmation_latency_ms
+        FROM transactions
+        WHERE status = 'success' AND confirmed_at IS NOT NULL AND submitted_at IS NOT NULL
+    """)
+    row = cursor.fetchone()
+    stats['min_confirmation_latency_ms'] = round(row[1], 3) if row[1] else 0
+    stats['max_confirmation_latency_ms'] = round(row[2], 3) if row[2] else 0
+    stats['avg_confirmation_latency_ms'] = round(row[3], 3) if row[3] else 0
     
     # ===== TPS METRICS =====
     # TPS based on submission window
@@ -156,11 +167,6 @@ def analyze_database(db_path):
     stats['max_gas_price_wei'] = row[1] if row[1] else 0
     stats['avg_gas_price_wei'] = round(row[2], 0) if row[2] else 0
     
-    # Convert to Gwei (1 Gwei = 10^9 wei)
-    stats['min_gas_price_gwei'] = round(stats['min_gas_price_wei'] / 1e9, 2)
-    stats['max_gas_price_gwei'] = round(stats['max_gas_price_wei'] / 1e9, 2)
-    stats['avg_gas_price_gwei'] = round(stats['avg_gas_price_wei'] / 1e9, 2)
-    
     # ===== EFFECTIVE GAS PRICE (in wei) =====
     cursor.execute("""
         SELECT 
@@ -174,11 +180,6 @@ def analyze_database(db_path):
     stats['min_effective_gas_price_wei'] = row[0] if row[0] else 0
     stats['max_effective_gas_price_wei'] = row[1] if row[1] else 0
     stats['avg_effective_gas_price_wei'] = round(row[2], 0) if row[2] else 0
-    
-    # Convert to Gwei
-    stats['min_effective_gas_price_gwei'] = round(stats['min_effective_gas_price_wei'] / 1e9, 2)
-    stats['max_effective_gas_price_gwei'] = round(stats['max_effective_gas_price_wei'] / 1e9, 2)
-    stats['avg_effective_gas_price_gwei'] = round(stats['avg_effective_gas_price_wei'] / 1e9, 2)
     
     # ===== GAS USED (gas units consumed) =====
     cursor.execute("""
@@ -298,16 +299,17 @@ def generate_csv(databases, output_file='db_summary.csv'):
         'submission_window_seconds',
         'first_submission_time',
         'last_submission_time',
+
+        # Execution Latency (milliseconds)
+        'min_execution_latency_ms',
+        'max_execution_latency_ms',
+        'avg_execution_latency_ms',
         
         # Confirmation Latency (milliseconds)
         'min_confirmation_latency_ms',
         'max_confirmation_latency_ms',
         'avg_confirmation_latency_ms',
         
-        # Confirmation Latency (seconds)
-        'min_confirmation_latency_sec',
-        'max_confirmation_latency_sec',
-        'avg_confirmation_latency_sec',
         
         # TPS Metrics
         'tps_submission',
@@ -322,20 +324,10 @@ def generate_csv(databases, output_file='db_summary.csv'):
         'max_gas_price_wei',
         'avg_gas_price_wei',
         
-        # Gas Price (Gwei)
-        'min_gas_price_gwei',
-        'max_gas_price_gwei',
-        'avg_gas_price_gwei',
-        
         # Effective Gas Price (Wei)
         'min_effective_gas_price_wei',
         'max_effective_gas_price_wei',
         'avg_effective_gas_price_wei',
-        
-        # Effective Gas Price (Gwei)
-        'min_effective_gas_price_gwei',
-        'max_effective_gas_price_gwei',
-        'avg_effective_gas_price_gwei',
         
         # Gas Used
         'min_gas_used',
@@ -354,10 +346,6 @@ def generate_csv(databases, output_file='db_summary.csv'):
         'total_cost_eth',
         'avg_cost_per_tx_wei',
         'avg_cost_per_tx_eth',
-        
-        # Additional Info
-        'total_batches',
-        'unique_wallets',
     ]
     
     # Write CSV

@@ -265,7 +265,10 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 }
 
 func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int) ([]*TxRequest, error) {
-	startNonce := w.Nonce
+	startNonce, err := ts.GetNonce(ctx, w.Address)
+	if err != nil {
+		return nil, err
+	}
 
 	gasPrice, err := ts.GetGasPrice(ctx)
 	if err != nil {
@@ -276,7 +279,7 @@ func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wa
 	for i := 0; i < count; i++ {
 		requests = append(requests, &TxRequest{
 			Wallet:    w,
-			ToAddress: toAddress,
+			ToAddress: w.Address,
 			Value:     value,
 			Nonce:     startNonce + uint64(i),
 			GasPrice:  gasPrice,

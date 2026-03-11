@@ -428,7 +428,7 @@ func main() {
 	if config.RunDurationMinutes > 0 {
 		fmt.Printf("Running in LOOP MODE for %d minutes\n", config.RunDurationMinutes)
 		fmt.Println()
-		runInLoopMode(config, db, txSender, wsManager, wallets, dbWriteChan, &dbWriteWG)
+		runInLoopMode(config, db, wsManager, wallets, dbWriteChan, &dbWriteWG)
 	} else {
 		fmt.Println("Running in SINGLE MODE")
 		fmt.Println()
@@ -472,7 +472,7 @@ func main() {
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runInLoopMode(config *Config, db *Database, txSender *TransactionSender, wsManager *WebSocketManager, wallets []*Wallet, dbWriteChan chan DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runInLoopMode(config *Config, db *Database, wsManager *WebSocketManager, wallets []*Wallet, dbWriteChan chan DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	duration := time.Duration(config.RunDurationMinutes) * time.Minute
 	startTime := time.Now()
 	endTime := startTime.Add(duration)
@@ -490,6 +490,13 @@ func runInLoopMode(config *Config, db *Database, txSender *TransactionSender, ws
 
 		// Record start time for this iteration
 		iterationStart := time.Now()
+
+		txSender, err := NewTransactionSender(config.RPCURL)
+		if err != nil {
+			logError("Error connecting to RPC: %v\n", err)
+			os.Exit(1)
+		}
+		defer txSender.Close()
 
 		runSingleExecution(config, db, txSender, wsManager, wallets, dbWriteChan, dbWriteWG)
 

@@ -1,7 +1,6 @@
-package main
+package wallet
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"fmt"
 
@@ -21,7 +20,7 @@ type Wallet struct {
 
 // GenerateMnemonic generates a new mnemonic phrase
 func GenerateMnemonic() (string, error) {
-	entropy, err := bip39.NewEntropy(128) // 128 bits = 12 words
+	entropy, err := bip39.NewEntropy(128)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate entropy: %w", err)
 	}
@@ -35,73 +34,37 @@ func GenerateMnemonic() (string, error) {
 }
 
 // DeriveWalletsFromMnemonic derives multiple wallets from a single mnemonic.
-// If t is non-nil each wallet's starting nonce is pre-fetched from the RPC.
-func DeriveWalletsFromMnemonic(mnemonic string, count int, t *TransactionSender) ([]*Wallet, error) {
-	wallet, err := hdwallet.NewFromMnemonic(mnemonic)
+func DeriveWalletsFromMnemonic(mnemonic string, count int) ([]*Wallet, error) {
+	w, err := hdwallet.NewFromMnemonic(mnemonic)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HD wallet: %w", err)
 	}
 
-	ctx := context.Background()
 	wallets := make([]*Wallet, 0, count)
 
 	for i := 0; i < count; i++ {
 		// Standard Ethereum derivation path: m/44'/60'/0'/0/i
 		path := hdwallet.MustParseDerivationPath(fmt.Sprintf("m/44'/60'/0'/0/%d", i))
 
-		account, err := wallet.Derive(path, false)
+		account, err := w.Derive(path, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive account %d: %w", i, err)
 		}
 
-		privateKey, err := wallet.PrivateKey(account)
+		privateKey, err := w.PrivateKey(account)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get private key for account %d: %w", i, err)
 		}
 
-		var nonce uint64
-		if t != nil {
-			nonce, err = t.GetNonce(ctx, account.Address)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get nonce for account %d: %w", i, err)
-			}
-		}
-
-		w := &Wallet{
+		wallets = append(wallets, &Wallet{
 			Address:        account.Address,
 			PrivateKey:     privateKey,
 			DerivationPath: path.String(),
-			Nonce:          nonce,
-		}
-
-		wallets = append(wallets, w)
+			Nonce:          0,
+		})
 	}
 
 	return wallets, nil
-}
-
-// CreateWalletsFromMultipleMnemonics creates wallets from multiple mnemonics
-func CreateWalletsFromMultipleMnemonics(mnemonicCount, walletsPerMnemonic int) ([][]*Wallet, []string, error) {
-	allWallets := make([][]*Wallet, 0, mnemonicCount)
-	mnemonics := make([]string, 0, mnemonicCount)
-
-	for i := 0; i < mnemonicCount; i++ {
-		mnemonic, err := GenerateMnemonic()
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to generate mnemonic %d: %w", i, err)
-		}
-
-		mnemonics = append(mnemonics, mnemonic)
-
-		wallets, err := DeriveWalletsFromMnemonic(mnemonic, walletsPerMnemonic, nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to derive wallets from mnemonic %d: %w", i, err)
-		}
-
-		allWallets = append(allWallets, wallets)
-	}
-
-	return allWallets, mnemonics, nil
 }
 
 // GetPublicAddress returns the Ethereum address from a private key

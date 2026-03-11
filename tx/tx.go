@@ -1,10 +1,12 @@
-package main
+package tx
 
 import (
 	"context"
 	"fmt"
 	"math/big"
 	"time"
+
+	"go-tps/wallet"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -17,7 +19,7 @@ type TransactionSender struct {
 }
 
 type TxRequest struct {
-	Wallet    *Wallet
+	Wallet    *wallet.Wallet
 	ToAddress common.Address
 	Value     *big.Int
 	Nonce     uint64
@@ -82,15 +84,15 @@ func (ts *TransactionSender) CreateTransaction(req *TxRequest) (*types.Transacti
 		req.Value,
 		req.GasLimit,
 		req.GasPrice,
-		nil, // data
+		nil,
 	)
 
 	return tx, nil
 }
 
-func (ts *TransactionSender) SignTransaction(tx *types.Transaction, wallet *Wallet) (*types.Transaction, error) {
+func (ts *TransactionSender) SignTransaction(txn *types.Transaction, w *wallet.Wallet) (*types.Transaction, error) {
 	signer := types.NewEIP155Signer(ts.chainID)
-	signedTx, err := types.SignTx(tx, signer, wallet.PrivateKey)
+	signedTx, err := types.SignTx(txn, signer, w.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
@@ -103,7 +105,7 @@ func (ts *TransactionSender) SendTransaction(ctx context.Context, signedTx *type
 
 	err := ts.client.SendTransaction(ctx, signedTx)
 
-	executionTime := time.Since(startTime).Seconds() * 1000 // Convert to milliseconds
+	executionTime := time.Since(startTime).Seconds() * 1000
 
 	result := &TxResult{
 		TxHash:        signedTx.Hash().Hex(),
@@ -123,22 +125,19 @@ func (ts *TransactionSender) SendTransaction(ctx context.Context, signedTx *type
 }
 
 func (ts *TransactionSender) CreateAndSendTransaction(ctx context.Context, req *TxRequest) (*TxResult, error) {
-	// Create transaction
 	tx, err := ts.CreateTransaction(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Sign transaction
 	signedTx, err := ts.SignTransaction(tx, req.Wallet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Send transaction
 	result, err := ts.SendTransaction(ctx, signedTx)
 	if err != nil {
-		return result, err // Result contains error info
+		return result, err
 	}
 
 	return result, nil
@@ -150,7 +149,6 @@ func (ts *TransactionSender) SendMultipleTransactions(ctx context.Context, reque
 	for _, req := range requests {
 		result, err := ts.CreateAndSendTransaction(ctx, req)
 		if err != nil {
-			// Continue sending other transactions even if one fails
 			results = append(results, result)
 			continue
 		}
@@ -161,16 +159,15 @@ func (ts *TransactionSender) SendMultipleTransactions(ctx context.Context, reque
 }
 
 func (ts *TransactionSender) Close() {
-	ts.client.Close()
+	if ts.client != nil {
+		ts.client.Close()
+	}
 }
 
-// WaitForReceipt waits for a transaction to be mined and returns the receipt using RPC polling
 func (ts *TransactionSender) WaitForReceipt(ctx context.Context, txHash common.Hash, timeout time.Duration) (*types.Receipt, error) {
-	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Poll for receipt
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -183,37 +180,27 @@ func (ts *TransactionSender) WaitForReceipt(ctx context.Context, txHash common.H
 			if err == nil {
 				return receipt, nil
 			}
-			// If error is not "not found", return it
 			if err.Error() != "not found" {
-				// Continue polling for "not found" errors
 				continue
 			}
 		}
 	}
 }
 
-// WaitForReceiptWithSharedWebSocket uses a shared WebSocket client for receipt confirmation, falls back to RPC polling
-// This avoids creating multiple WebSocket connections
-// Runs multiple receipt check strategies in parallel for faster confirmation
 func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Context, wsClient *ethclient.Client, txHash common.Hash, timeout time.Duration) (*types.Receipt, error) {
-	// If WebSocket client is not provided, use RPC polling
 	if wsClient == nil {
 		return ts.WaitForReceipt(ctx, txHash, timeout)
 	}
 
-	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Channel to receive receipt from any goroutine
 	receiptChan := make(chan *types.Receipt, 1)
 
-	// Goroutine 1: Subscribe to new block headers and check on each new block
 	go func() {
 		headers := make(chan *types.Header)
 		sub, err := wsClient.SubscribeNewHead(ctx, headers)
 		if err != nil {
-			// Subscription failed, but don't error out - let polling handle it
 			return
 		}
 		defer sub.Unsubscribe()
@@ -227,7 +214,6 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 					return
 				}
 			case <-headers:
-				// New block received, check for receipt
 				receipt, err := wsClient.TransactionReceipt(ctx, txHash)
 				if err == nil {
 					select {
@@ -240,12 +226,10 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 		}
 	}()
 
-	// Goroutine 2: Poll for receipt at regular intervals using RPC client
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
-		// Check immediately first
 		receipt, err := ts.client.TransactionReceipt(ctx, txHash)
 		if err == nil {
 			select {
@@ -255,7 +239,6 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 			return
 		}
 
-		// Continue polling
 		for {
 			select {
 			case <-ctx.Done():
@@ -273,7 +256,6 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 		}
 	}()
 
-	// Wait for receipt from any goroutine or timeout
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("timeout waiting for transaction receipt")
@@ -282,36 +264,29 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 	}
 }
 
-// PrepareBatchTransactions prepares multiple transactions with precalculated nonces
-func (ts *TransactionSender) PrepareBatchTransactions(
-	ctx context.Context,
-	wallet *Wallet,
-	toAddress common.Address,
-	value *big.Int,
-	count int,
-) ([]*TxRequest, error) {
-	// Get starting nonce
-	startNonce := wallet.Nonce
+func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int) ([]*TxRequest, error) {
+	startNonce := w.Nonce
 
-	// Get gas price
 	gasPrice, err := ts.GetGasPrice(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Prepare transactions with precalculated nonces
 	requests := make([]*TxRequest, 0, count)
 	for i := 0; i < count; i++ {
-		req := &TxRequest{
-			Wallet:    wallet,
+		requests = append(requests, &TxRequest{
+			Wallet:    w,
 			ToAddress: toAddress,
 			Value:     value,
 			Nonce:     startNonce + uint64(i),
 			GasPrice:  gasPrice,
-			GasLimit:  21000, // Standard ETH transfer
-		}
-		requests = append(requests, req)
+			GasLimit:  21000,
+		})
 	}
-	wallet.Nonce += uint64(count)
+	w.Nonce += uint64(count)
 	return requests, nil
+}
+
+func (ts *TransactionSender) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {
+	return ts.client.HeaderByHash(ctx, hash)
 }

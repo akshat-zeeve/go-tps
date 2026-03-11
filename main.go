@@ -10,7 +10,11 @@ import (
 	"sync"
 	"time"
 
+	dbpkg "go-tps/db"
 	"go-tps/logger"
+	txpkg "go-tps/tx"
+	"go-tps/wallet"
+	"go-tps/worker"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/joho/godotenv"
@@ -78,7 +82,7 @@ func main() {
 
 	// Initialize database
 	logger.Info("Initializing database...\n")
-	db, err := NewDatabase(config.DBPath)
+	db, err := dbpkg.NewDatabase(config.DBPath)
 	if err != nil {
 		logger.Error("Error initializing database: %v\n", err)
 		os.Exit(1)
@@ -99,7 +103,7 @@ func main() {
 
 	// Connect to RPC
 	logger.Info("Connecting to RPC: %s\n", config.RPCURL)
-	txSender, err := NewTransactionSender(config.RPCURL)
+	txSender, err := txpkg.NewTransactionSender(config.RPCURL)
 	if err != nil {
 		logger.Error("Error connecting to RPC: %v\n", err)
 		os.Exit(1)
@@ -108,10 +112,10 @@ func main() {
 	logger.Info("✓ Connected to RPC\n")
 
 	// Connect to WebSocket if URL is provided (for faster receipt confirmations)
-	var wsManager *WebSocketManager
+	var wsManager *worker.WebSocketManager
 	if config.WSURL != "" {
 		logger.Info("Connecting to WebSocket: %s\n", config.WSURL)
-		wsManager = NewWebSocketManager(config.WSURL, config.WSReconnectDelay)
+		wsManager = worker.NewWebSocketManager(config.WSURL, config.WSReconnectDelay)
 		err = wsManager.Connect()
 		if err != nil {
 			logger.Warn("Could not connect to WebSocket (will use RPC polling): %v\n", err)
@@ -132,7 +136,7 @@ func main() {
 	} else {
 		logger.Info("\nGenerating new mnemonic...\n")
 		var err error
-		mnemonic, err = GenerateMnemonic()
+		mnemonic, err = wallet.GenerateMnemonic()
 		if err != nil {
 			logger.Error("Error generating mnemonic: %v\n", err)
 			os.Exit(1)
@@ -142,7 +146,7 @@ func main() {
 	// Generate wallets from single mnemonic
 	logger.Info("Deriving %d wallets from mnemonic...\n", config.WalletCount)
 
-	wallets, err := DeriveWalletsFromMnemonic(mnemonic, config.WalletCount, txSender)
+	wallets, err := wallet.DeriveWalletsFromMnemonic(mnemonic, config.WalletCount)
 	if err != nil {
 		logger.Error("Error deriving wallets: %v\n", err)
 		os.Exit(1)
@@ -158,10 +162,10 @@ func main() {
 
 	// Save wallets to database
 	logger.Info("\nSaving wallets to database...\n")
-	for _, wallet := range wallets {
-		err := db.InsertWallet(wallet.Address.Hex(), wallet.DerivationPath)
+	for _, w := range wallets {
+		err := db.InsertWallet(w.Address.Hex(), w.DerivationPath)
 		if err != nil {
-			logger.Warn("Could not save wallet %s: %v\n", wallet.Address.Hex(), err)
+			logger.Warn("Could not save wallet %s: %v\n", w.Address.Hex(), err)
 		}
 	}
 	logger.Info("✓ Wallets saved to database\n")
@@ -170,20 +174,19 @@ func main() {
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("WALLET ADDRESSES AND BALANCES")
 	fmt.Println(strings.Repeat("=", 60))
-	logger.Warn("Could not cleanup old records: %v\n", err)
 
 	allFunded := true
 
-	for i, wallet := range wallets {
+	for i, w := range wallets {
 		logger.Info("Connecting to RPC: %s\n", config.RPCURL)
 		if err != nil {
-			logger.Debug("[%d] %s\n", i+1, wallet.Address.Hex())
+			logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
 			logger.Error("Error connecting to RPC: %v\n", err)
 			allFunded = false
 		} else {
-			balance, err := txSender.GetBalance(context.Background(), wallet.Address)
+			balance, err := txSender.GetBalance(context.Background(), w.Address)
 			if err != nil {
-				logger.Debug("[%d] %s\n", i+1, wallet.Address.Hex())
+				logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
 				logger.Error("Error fetching balance: %v\n", err)
 				allFunded = false
 				continue
@@ -194,7 +197,7 @@ func main() {
 			logger.Info("✓ Connected to RPC\n")
 			ethValue := new(big.Float).Quo(balanceFloat, big.NewFloat(1e18))
 
-			fmt.Printf("[%d] %s\n", i+1, wallet.Address.Hex())
+			fmt.Printf("[%d] %s\n", i+1, w.Address.Hex())
 			fmt.Printf("    Balance: %s wei (%.6f ETH)\n", balance.String(), ethValue)
 			logger.Info("Connecting to WebSocket: %s\n", config.WSURL)
 			// Check if balance is zero
@@ -241,15 +244,15 @@ func main() {
 	} else {
 		logger.Debug("Using configured buffer size: %d\n", bufferSize)
 	}
-	receiptJobChan := make(chan ReceiptJob, config.WalletCount*config.TxPerWallet)
-	dbWriteChan := make(chan DBWriteJob, bufferSize)
+	receiptJobChan := make(chan worker.ReceiptJob, config.WalletCount*config.TxPerWallet)
+	dbWriteChan := make(chan worker.DBWriteJob, bufferSize)
 
 	dbWriteWG := sync.WaitGroup{}
 
 	// Start worker pools
-	startReceiptWorkerPool(config.ReceiptWorkers, receiptJobChan, &receiptWG, wsManager, db, txSender)
+	worker.StartReceiptWorkerPool(config.ReceiptWorkers, receiptJobChan, &receiptWG, wsManager, db, txSender)
 	logger.Info("📋 Started %d receipt confirmation workers\n", config.ReceiptWorkers)
-	startDBWriterPool(config.ReceiptWorkers, dbWriteChan, receiptJobChan, db, &dbWriteWG)
+	worker.StartDBWriterPool(config.ReceiptWorkers, dbWriteChan, receiptJobChan, db, &dbWriteWG)
 	logger.Info("📋 Started %d DB writer workers\n\n", config.ReceiptWorkers)
 
 	// Check if we should run in loop mode
@@ -298,7 +301,7 @@ func main() {
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runInLoopMode(config *Config, db *Database, wsManager *WebSocketManager, wallets []*Wallet, dbWriteChan chan DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runInLoopMode(config *Config, db *dbpkg.Database, wsManager *worker.WebSocketManager, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	duration := time.Duration(config.RunDurationMinutes) * time.Minute
 	startTime := time.Now()
 	endTime := startTime.Add(duration)
@@ -317,7 +320,7 @@ func runInLoopMode(config *Config, db *Database, wsManager *WebSocketManager, wa
 		// Record start time for this iteration
 		iterationStart := time.Now()
 
-		txSender, err := NewTransactionSender(config.RPCURL)
+		txSender, err := txpkg.NewTransactionSender(config.RPCURL)
 		if err != nil {
 			logger.Error("Error connecting to RPC: %v\n", err)
 			os.Exit(1)
@@ -350,7 +353,7 @@ func runInLoopMode(config *Config, db *Database, wsManager *WebSocketManager, wa
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runSingleExecution(config *Config, db *Database, txSender *TransactionSender, wsManager *WebSocketManager, wallets []*Wallet, dbWriteChan chan DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runSingleExecution(config *Config, db *dbpkg.Database, txSender *txpkg.TransactionSender, wsManager *worker.WebSocketManager, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	// Lock submission mutex to pause all workers during transaction submission
 	logger.Debug("🔒 Submission phase started - workers paused\n")
 
@@ -383,9 +386,9 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Process all wallets in parallel
-	for walletIdx, wallet := range wallets {
+	for walletIdx, w := range wallets {
 		wgSubmit.Add(1)
-		go func(idx int, w *Wallet) {
+		go func(idx int, w *wallet.Wallet) {
 			defer wgSubmit.Done()
 
 			logger.Debug("\n[Wallet %d/%d] (%s)\n",
@@ -410,7 +413,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 				result, err := txSender.CreateAndSendTransaction(ctx, req)
 
 				// Create database transaction record
-				dbTx := &Transaction{
+				dbTx := &dbpkg.Transaction{
 					BatchNumber:   batchNumber,
 					WalletAddress: w.Address.Hex(),
 					Nonce:         req.Nonce,
@@ -430,7 +433,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 					logger.Error("  [W%d] Tx %d FAILED (nonce %d): %v\n", idx+1, txIdx+1, req.Nonce, err)
 
 					// Queue DB write only (no receipt needed for submission failures)
-					dbWriteChan <- DBWriteJob{Tx: dbTx}
+					dbWriteChan <- worker.DBWriteJob{Tx: dbTx}
 				} else {
 					dbTx.TxHash = result.TxHash
 					dbTx.Status = "pending"
@@ -440,7 +443,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 					// Queue DB write + receipt job together.
 					// The DB writer will INSERT first, then dispatch the receipt job,
 					// ensuring UPDATE never runs before INSERT.
-					dbWriteChan <- DBWriteJob{
+					dbWriteChan <- worker.DBWriteJob{
 						Tx: dbTx,
 					}
 				}
@@ -452,7 +455,7 @@ func runSingleExecution(config *Config, db *Database, txSender *TransactionSende
 				txRequests[0].Nonce,
 				txRequests[len(txRequests)-1].Nonce,
 			)
-		}(walletIdx, wallet)
+		}(walletIdx, w)
 	}
 
 	// Wait for transaction submissions to complete

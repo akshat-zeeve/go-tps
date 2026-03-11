@@ -8,6 +8,7 @@ import (
 
 	"go-tps/wallet"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -195,72 +196,40 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	receiptChan := make(chan *types.Receipt, 1)
-
-	go func() {
-		headers := make(chan *types.Header)
-		sub, err := wsClient.SubscribeNewHead(ctx, headers)
-		if err != nil {
-			return
-		}
-		defer sub.Unsubscribe()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case subErr := <-sub.Err():
-				if subErr != nil {
-					return
-				}
-			case <-headers:
-				receipt, err := wsClient.TransactionReceipt(ctx, txHash)
-				if err == nil {
-					select {
-					case receiptChan <- receipt:
-					default:
-					}
-					return
-				}
-			}
-		}
-	}()
-
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		receipt, err := ts.client.TransactionReceipt(ctx, txHash)
-		if err == nil {
-			select {
-			case receiptChan <- receipt:
-			default:
-			}
-			return
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				receipt, err := ts.client.TransactionReceipt(ctx, txHash)
-				if err == nil {
-					select {
-					case receiptChan <- receipt:
-					default:
-					}
-					return
-				}
-			}
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("timeout waiting for transaction receipt")
-	case receipt := <-receiptChan:
+	// Check immediately before subscribing — tx may already be mined.
+	if receipt, err := ts.client.TransactionReceipt(ctx, txHash); err == nil {
 		return receipt, nil
+	}
+
+	// SubscribeTransactionReceipts streams []*types.Receipt batches to the channel
+	// whenever any of the watched transaction hashes get included in a block.
+	query := &ethereum.TransactionReceiptsQuery{
+		TransactionHashes: []common.Hash{txHash},
+	}
+	receiptCh := make(chan []*types.Receipt, 1)
+	sub, err := wsClient.SubscribeTransactionReceipts(ctx, query, receiptCh)
+	if err != nil {
+		// WebSocket subscription failed; fall back to RPC polling.
+		return ts.WaitForReceipt(ctx, txHash, timeout)
+	}
+	defer sub.Unsubscribe()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting for transaction receipt")
+		case err := <-sub.Err():
+			// Subscription broken; fall back to polling.
+			_ = err
+			return ts.WaitForReceipt(ctx, txHash, timeout)
+		case receipts := <-receiptCh:
+			// A batch of receipts arrived; find the one matching our tx.
+			for _, r := range receipts {
+				if r.TxHash == txHash {
+					return r, nil
+				}
+			}
+		}
 	}
 }
 

@@ -260,7 +260,7 @@ func main() {
 
 		executionStart := time.Now()
 
-		runSingleExecution(config, db, txSender, wsManager, wallets, dbWriteChan, &dbWriteWG)
+		runSingleExecution(config, db, txSender, wallets, dbWriteChan, &dbWriteWG)
 
 		// Calculate elapsed time and ensure minimum 1 second
 		executionElapsed := time.Since(executionStart)
@@ -320,12 +320,12 @@ func runInLoopMode(config *Config, db *dbpkg.Database, wsManager *worker.WebSock
 			os.Exit(1)
 		}
 		logger.Info("📋 Started %d receipt confirmation workers\n", config.ReceiptWorkers)
-		runSingleExecution(config, db, txSender, wsManager, wallets, dbWriteChan, dbWriteWG)
+		runSingleExecution(config, db, txSender, wallets, dbWriteChan, dbWriteWG)
 		logger.Info("📋 Started %d DB writer workers\n\n", config.ReceiptWorkers)
 		txSender.Close()
 		// Calculate elapsed time and ensure minimum 1 second per iteration
 		iterationElapsed := time.Since(iterationStart)
-		minDuration := 1 * time.Second
+		minDuration := 990 * time.Millisecond
 
 		if iterationElapsed < minDuration {
 			remainingSleep := minDuration - iterationElapsed
@@ -347,7 +347,7 @@ func runInLoopMode(config *Config, db *dbpkg.Database, wsManager *worker.WebSock
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runSingleExecution(config *Config, db *dbpkg.Database, txSender *txpkg.TransactionSender, wsManager *worker.WebSocketManager, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runSingleExecution(config *Config, db *dbpkg.Database, txSender *txpkg.TransactionSender, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	// Lock submission mutex to pause all workers during transaction submission
 	logger.Debug("🔒 Submission phase started - workers paused\n")
 

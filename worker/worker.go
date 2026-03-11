@@ -107,6 +107,13 @@ func dbWriterWorker(workerID int, jobChan <-chan DBWriteJob, receiptJobChan chan
 			continue
 		}
 
+		// Only dispatch a receipt job for transactions that were actually
+		// submitted (have a hash). Failed submissions have no on-chain receipt.
+		if job.Tx.TxHash == "" {
+			logger.Debug("[DBWriter %d] Skipping receipt dispatch for failed submission (nonce %d)\n", workerID, job.Tx.Nonce)
+			continue
+		}
+
 		receiptJobChan <- ReceiptJob{
 			TxHash:     job.Tx.TxHash,
 			Nonce:      job.Tx.Nonce,

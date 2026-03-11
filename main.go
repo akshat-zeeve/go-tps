@@ -178,33 +178,27 @@ func main() {
 	allFunded := true
 
 	for i, w := range wallets {
-		logger.Info("Connecting to RPC: %s\n", config.RPCURL)
+
+		balance, err := txSender.GetBalance(context.Background(), w.Address)
 		if err != nil {
 			logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
-			logger.Error("Error connecting to RPC: %v\n", err)
+			logger.Error("Error fetching balance: %v\n", err)
 			allFunded = false
-		} else {
-			balance, err := txSender.GetBalance(context.Background(), w.Address)
-			if err != nil {
-				logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
-				logger.Error("Error fetching balance: %v\n", err)
-				allFunded = false
-				continue
-			}
+			continue
+		}
 
-			balanceFloat := new(big.Float).SetInt(balance)
-			// Convert balance to ETH for display
-			logger.Info("✓ Connected to RPC\n")
-			ethValue := new(big.Float).Quo(balanceFloat, big.NewFloat(1e18))
+		balanceFloat := new(big.Float).SetInt(balance)
+		// Convert balance to ETH for display
+		logger.Info("✓ Connected to RPC\n")
+		ethValue := new(big.Float).Quo(balanceFloat, big.NewFloat(1e18))
 
-			fmt.Printf("[%d] %s\n", i+1, w.Address.Hex())
-			fmt.Printf("    Balance: %s wei (%.6f ETH)\n", balance.String(), ethValue)
-			logger.Info("Connecting to WebSocket: %s\n", config.WSURL)
-			// Check if balance is zero
-			if balance.Cmp(big.NewInt(0)) == 0 {
-				logger.Warn("    ⚠️  WARNING: Wallet has ZERO balance!\n")
-				logger.Warn("Could not connect to WebSocket (will use RPC polling): %v\n", err)
-			}
+		fmt.Printf("[%d] %s\n", i+1, w.Address.Hex())
+		fmt.Printf("    Balance: %s wei (%.6f ETH)\n", balance.String(), ethValue)
+		logger.Info("Connecting to WebSocket: %s\n", config.WSURL)
+		// Check if balance is zero
+		if balance.Cmp(big.NewInt(0)) == 0 {
+			logger.Warn("    ⚠️  WARNING: Wallet has ZERO balance!\n")
+			logger.Warn("Could not connect to WebSocket (will use RPC polling): %v\n", err)
 		}
 		logger.Info("✓ Connected to WebSocket\n")
 	}

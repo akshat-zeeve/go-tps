@@ -44,6 +44,8 @@ func InitLogFiles() error {
 		}
 		fileLoggers[i] = log.New(logger, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	}
+
+	fileLoggers[DEBUG] = nil
 	return nil
 }
 

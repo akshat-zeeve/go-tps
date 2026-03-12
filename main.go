@@ -389,13 +389,6 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 	logger.Info("  - Value per tx: %s wei\n", value.String())
 	logger.Info("\n")
 
-	// Sleep before starting transaction submission if configured
-	if config.SleepMinutes > 0 {
-		fmt.Printf("Sleeping for %d minutes before starting transaction submission...\n", config.SleepMinutes)
-		time.Sleep(time.Duration(config.SleepMinutes) * time.Minute)
-		fmt.Println("Sleep completed.")
-	}
-
 	// Use mutex for thread-safe counter updates
 	var wgSubmit sync.WaitGroup // Wait for transaction submissions only
 	// Receipt confirmations happen in background, we don't wait for them
@@ -429,6 +422,13 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 			if err != nil {
 				logger.Error("  Error preparing transactions: %v\n", err)
 				return
+			}
+
+			// Sleep before starting transaction submission if configured
+			if config.SleepMinutes > 0 {
+				fmt.Printf("[Wallet %d/%d] Sleeping for %d minutes before starting transaction submission...\n", idx+1, len(wallets), config.SleepMinutes)
+				time.Sleep(time.Duration(config.SleepMinutes) * time.Minute)
+				fmt.Println("Sleep completed.")
 			}
 
 			// Send all transactions for this wallet

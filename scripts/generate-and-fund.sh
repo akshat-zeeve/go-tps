@@ -12,7 +12,8 @@ if [ -z "$FUNDER_PK" ]; then
 fi
 
 # generate mnemonic
-MNEMONIC=$(cast wallet new-mnemonic)
+MNEMONIC_OUTPUT=$(cast wallet new-mnemonic)
+MNEMONIC=$(echo "$MNEMONIC_OUTPUT" | grep -A1 "Phrase:" | tail -n1)
 
 echo "Generated Mnemonic:"
 echo "$MNEMONIC"

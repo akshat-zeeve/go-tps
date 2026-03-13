@@ -424,6 +424,9 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 		underPricedError = false // reset for next transactions
 	}
 
+	// multiple with 0.01 to increase by 1% instead of 10%
+	gasPrice = new(big.Int).Add(gasPrice, new(big.Int).Div(gasPrice, big.NewInt(100)))
+
 	// Process all wallets in parallel
 	for walletIdx, w := range wallets {
 		wgSubmit.Add(1)
@@ -507,10 +510,10 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 				if err != nil {
 					dbTx.Status = "failed"
 					dbTx.Error = err.Error()
-					
+
 					// Check for specific error before reassigning err variable
 					isUnderpriced := err.Error() == "replacement transaction underpriced"
-					
+
 					nonce, getNonceErr := txSender.GetNonce(wCtx, w.Address)
 
 					if isUnderpriced {

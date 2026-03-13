@@ -214,62 +214,58 @@ func processReceiptJob(workerID int, txSender *tx.TransactionSender, job Receipt
 	return false
 }
 
-// QueuePendingTransactionsForReceipt fetches pending transactions in batches and queues them for receipt processing
+// QueuePendingTransactionsForReceipt fetches pending transactions and queues them for receipt processing
+// Processes in controlled batches of 1000, waiting for completion before queuing more
 func QueuePendingTransactionsForReceipt(database *db.Database, receiptJobChan chan ReceiptJob) error {
 	fmt.Println("\nProcessing pending transactions for receipt confirmation...")
 
-	// Get total count of pending transactions
-	pendingCount, err := database.GetPendingTransactionCount()
-	if err != nil {
-		logger.Error("Error getting pending transaction count: %v\n", err)
-		return err
-	}
+	const batchSize = 1000
+	lastTxnID := int64(0)
+	totalProcessed := 0
 
-	fmt.Printf("Found %d pending transactions to process\n", pendingCount)
-
-	if pendingCount == 0 {
-		fmt.Println("No pending transactions found to process")
-		return nil
-	}
-
-	batchSize := 10000
-	totalBatches := (pendingCount + batchSize - 1) / batchSize // Ceiling division
-
-	fmt.Printf("Processing in %d batches of up to %d transactions each\n", totalBatches, batchSize)
-
-	for batchNum := 0; batchNum < totalBatches; batchNum++ {
-		offset := batchNum * batchSize
-		fmt.Printf("Processing batch %d/%d (offset: %d)...\n", batchNum+1, totalBatches, offset)
-
-		// Fetch batch of pending transactions
-		pendingTxs, err := database.GetPendingTransactionsBatch(batchSize, offset)
+	for {
+		// Get the next batch of pending transactions using cursor-based pagination
+		transactions, err := database.GetPendingTransactionsBatchCursor(lastTxnID, batchSize)
 		if err != nil {
-			logger.Error("Error fetching pending transactions batch %d: %v\n", batchNum+1, err)
-			continue
+			return fmt.Errorf("failed to fetch pending transactions: %w", err)
 		}
 
-		if len(pendingTxs) == 0 {
-			fmt.Printf("No pending transactions in batch %d, stopping\n", batchNum+1)
+		// If no transactions returned, we're done
+		if len(transactions) == 0 {
 			break
 		}
 
-		fmt.Printf("  Fetched %d transactions in batch %d\n", len(pendingTxs), batchNum+1)
-
-		// Create receipt jobs and push to channel
-		for _, tx := range pendingTxs {
-			receiptJob := ReceiptJob{
+		// Queue all jobs from this batch
+		for _, tx := range transactions {
+			job := ReceiptJob{
 				TxHash:     tx.TxHash,
 				Nonce:      tx.Nonce,
 				StartTime:  tx.SubmittedAt,
 				RetryCount: 0,
 			}
-			receiptJobChan <- receiptJob
+
+			select {
+			case receiptJobChan <- job:
+				// Job queued successfully
+			default:
+				// Channel is full - this shouldn't happen with proper sizing
+				logger.Warn("Receipt job channel is full, this may cause delays")
+				receiptJobChan <- job // Block until we can send
+			}
+
+			// Update the cursor to the last processed transaction ID
+			lastTxnID = tx.ID
 		}
 
-		fmt.Printf("  ✓ Queued %d receipt jobs from batch %d\n", len(pendingTxs), batchNum+1)
+		totalProcessed += len(transactions)
+		logger.Info("Queued batch of %d pending transactions for receipt processing (total: %d)", len(transactions), totalProcessed)
 
+		// If we got less than batchSize, we've processed all remaining transactions
+		if len(transactions) < batchSize {
+			break
+		}
 	}
 
-	fmt.Printf("✓ All %d pending transactions queued for receipt processing\n", pendingCount)
+	logger.Info("✓ Completed queuing %d pending transactions for receipt processing", totalProcessed)
 	return nil
 }

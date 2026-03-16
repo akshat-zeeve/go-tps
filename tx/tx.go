@@ -110,7 +110,7 @@ func (ts *TransactionSender) CreateTransaction(req *TxRequest) (*types.Transacti
 }
 
 func (ts *TransactionSender) SignTransaction(txn *types.Transaction, w *wallet.Wallet) (*types.Transaction, error) {
-	signer := types.NewEIP155Signer(ts.chainID)
+	signer := types.NewLondonSigner(ts.chainID)
 	signedTx, err := types.SignTx(txn, signer, w.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)

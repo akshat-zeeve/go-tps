@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"go-tps/config"
 	dbpkg "go-tps/db"
 	"go-tps/logger"
 	txpkg "go-tps/tx"
@@ -19,54 +20,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/joho/godotenv"
 )
-
-const (
-	DefaultRPCURL             = "http://localhost:8545"
-	DefaultWSURL              = "http://localhost:8546" // Empty = no WebSocket, will use RPC polling
-	DefaultDBPath             = "./transactions.db"
-	DefaultWalletCount        = 10
-	DefaultTxPerWallet        = 10
-	DefaultValueWei           = "1000000000000000" // 0.001 ETH
-	DefaultToAddress          = "0x0000000000000000000000000000000000000001"
-	DefaultRunDurationMinutes = 0       // 0 = run once, >0 = loop for duration
-	DefaultDBWorkers          = 4       // DB writer workers
-	DefaultReceiptWorkers     = 4       // Receipt confirmation workers
-	DefaultLogLevel           = "DEBUG" // DEBUG, INFO, WARN, ERROR
-	DefaultAutomatedMode      = false   // true = skip user confirmation
-	DefaultContextTimeout     = 30      // seconds for RPC calls
-	DefaultDBRetentionDays    = 30      // cleanup records older than this
-	DefaultWSReconnectDelay   = 5       // seconds before reconnecting WebSocket
-	DefaultDBBufferSize       = 500     // DB channel buffer size (0 = auto-calculate from WalletCount * TxPerWallet)
-	DefaultReceiptBufferSize  = 1000    // Receipt channel buffer size (0 = auto-calculate)
-	DefaultDBMaxOpenConns     = 15      // max open DB connections
-	DefaultDBMaxIdleConns     = 5       // max idle DB connections
-	DefaultSleepMinutes       = 0       // minutes to sleep before submitting transactions
-)
-
-// (logging implementation moved to the logger package)
-
-type Config struct {
-	RPCURL             string
-	WSURL              string
-	DBPath             string
-	Mnemonic           string
-	WalletCount        int
-	TxPerWallet        int
-	ValueWei           string
-	ToAddress          string
-	RunDurationMinutes int
-	DBWorkers          int // Number of DB writer workers
-	ReceiptWorkers     int // Number of receipt confirmation workers
-	LogLevel           string
-	AutomatedMode      bool // Skip user confirmation if true
-	ContextTimeout     int  // Timeout for RPC calls in seconds
-	WSReconnectDelay   int  // Seconds before reconnecting WebSocket
-	DBBufferSize       int  // DB channel buffer size (0 = auto-calculate)
-	ReceiptBufferSize  int  // Receipt channel buffer size (0 = auto-calculate)
-	DBMaxOpenConns     int  // Max open SQLite connections
-	DBMaxIdleConns     int  // Max idle SQLite connections
-	SleepMinutes       int  // Minutes to sleep before submitting transactions
-}
 
 func main() {
 	fmt.Println("=== Ethereum TPS Tester ===")
@@ -86,7 +39,7 @@ func main() {
 	}
 
 	// Load configuration
-	config := LoadConfig()
+	config := config.LoadConfig()
 	logger.SetLevel(config.LogLevel)
 
 	// Initialize database
@@ -323,7 +276,7 @@ func main() {
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runInLoopMode(config *Config, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runInLoopMode(config *config.Config, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	duration := time.Duration(config.RunDurationMinutes) * time.Minute
 	startTime := time.Now()
 	endTime := startTime.Add(duration)
@@ -373,7 +326,7 @@ func runInLoopMode(config *Config, wallets []*wallet.Wallet, dbWriteChan chan wo
 	fmt.Println(strings.Repeat("=", 60))
 }
 
-func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
+func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender, wallets []*wallet.Wallet, dbWriteChan chan worker.DBWriteJob, dbWriteWG *sync.WaitGroup) {
 	// Lock submission mutex to pause all workers during transaction submission
 	logger.Debug("🔒 Submission phase started - workers paused\n")
 
@@ -570,73 +523,6 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 
 	// Return immediately after transactions are submitted; analysis and summaries
 	// can be performed later using the provided tooling (e.g. analyze.sh).
-}
-
-func LoadConfig() *Config {
-	// Load from environment variables or use defaults
-	config := &Config{
-		RPCURL:             getEnv("RPC_URL", DefaultRPCURL),
-		WSURL:              getEnv("WS_URL", DefaultWSURL),
-		DBPath:             getEnv("DB_PATH", DefaultDBPath),
-		Mnemonic:           getEnv("MNEMONIC", ""),
-		WalletCount:        getEnvInt("WALLET_COUNT", DefaultWalletCount),
-		TxPerWallet:        getEnvInt("TX_PER_WALLET", DefaultTxPerWallet),
-		ValueWei:           getEnv("VALUE_WEI", DefaultValueWei),
-		ToAddress:          getEnv("TO_ADDRESS", DefaultToAddress),
-		RunDurationMinutes: getEnvInt("RUN_DURATION_MINUTES", DefaultRunDurationMinutes),
-		DBWorkers:          getEnvInt("DB_WORKERS", DefaultDBWorkers),
-		ReceiptWorkers:     getEnvInt("RECEIPT_WORKERS", DefaultReceiptWorkers),
-		LogLevel:           getEnv("LOG_LEVEL", DefaultLogLevel),
-		AutomatedMode:      getEnvBool("AUTOMATED_MODE", DefaultAutomatedMode),
-		ContextTimeout:     getEnvInt("CONTEXT_TIMEOUT", DefaultContextTimeout),
-		WSReconnectDelay:   getEnvInt("WS_RECONNECT_DELAY", DefaultWSReconnectDelay),
-		DBBufferSize:       getEnvInt("DB_BUFFER_SIZE", DefaultDBBufferSize),
-		ReceiptBufferSize:  getEnvInt("RECEIPT_BUFFER_SIZE", DefaultReceiptBufferSize),
-		DBMaxOpenConns:     getEnvInt("DB_MAX_OPEN_CONNS", DefaultDBMaxOpenConns),
-		DBMaxIdleConns:     getEnvInt("DB_MAX_IDLE_CONNS", DefaultDBMaxIdleConns),
-		SleepMinutes:       getEnvInt("SLEEP_MINUTES", DefaultSleepMinutes),
-	}
-
-	return config
-}
-
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-
-	var intValue int
-	_, err := fmt.Sscanf(value, "%d", &intValue)
-	if err != nil {
-		fmt.Printf("Warning: Invalid integer value for %s: '%s', using default: %d\n", key, value, defaultValue)
-		return defaultValue
-	}
-	return intValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	switch strings.ToLower(value) {
-	case "true", "1", "yes", "y":
-		return true
-	case "false", "0", "no", "n":
-		return false
-	default:
-		fmt.Printf("Warning: Invalid boolean value for %s: '%s', using default: %v\n", key, value, defaultValue)
-		return defaultValue
-	}
 }
 
 func SaveMnemonicToFile(filename string, mnemonic string) error {

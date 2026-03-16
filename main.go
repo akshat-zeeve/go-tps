@@ -409,6 +409,13 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 	defer wCancel()
 
 	gasPrice, err := txSender.GetGasPrice(ctx)
+	feeHistory, feeErr := txSender.FeeHistory(ctx)
+
+	if feeErr != nil {
+		logger.Warn("Error fetching fee history: %v\n", feeErr)
+	} else {
+		logger.Debug("Current base fee from fee history: %s wei\n", feeHistory.BaseFee[len(feeHistory.BaseFee)-1].String())
+	}
 	if err != nil {
 		// 1 gwei default if RPC call fails
 		gasPrice = big.NewInt(1e9)
@@ -453,6 +460,7 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 				value,
 				config.TxPerWallet,
 				gasPrice,
+				feeHistory.BaseFee[len(feeHistory.BaseFee)-1],
 			)
 
 			if err != nil {
@@ -501,7 +509,6 @@ func runSingleExecution(config *Config, txSender *txpkg.TransactionSender, walle
 					Nonce:         req.Nonce,
 					ToAddress:     toAddress.Hex(),
 					Value:         value.String(),
-					GasPrice:      req.GasPrice.String(),
 					GasLimit:      req.GasLimit,
 					SubmittedAt:   submittedAt,
 					ExecutionTime: execTime,

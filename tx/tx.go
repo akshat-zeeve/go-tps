@@ -24,9 +24,9 @@ type TxRequest struct {
 	ToAddress common.Address
 	Value     *big.Int
 	Nonce     uint64
-	GasPrice  *big.Int
 	GasLimit  uint64
 	signedTx  *types.Transaction
+	BaseFee   *big.Int
 }
 
 type TxResult struct {
@@ -71,6 +71,14 @@ func (ts *TransactionSender) GetGasPrice(ctx context.Context) (*big.Int, error) 
 	return gasPrice, nil
 }
 
+func (ts *TransactionSender) FeeHistory(ctx context.Context) (*ethereum.FeeHistory, error) {
+	feeHistory, err := ts.client.FeeHistory(ctx, 1, nil, []float64{10})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get fee history: %w", err)
+	}
+	return feeHistory, nil
+}
+
 func (ts *TransactionSender) GetBalance(ctx context.Context, address common.Address) (*big.Int, error) {
 	balance, err := ts.client.BalanceAt(ctx, address, nil)
 	if err != nil {
@@ -80,15 +88,20 @@ func (ts *TransactionSender) GetBalance(ctx context.Context, address common.Addr
 }
 
 func (ts *TransactionSender) CreateTransaction(req *TxRequest) (*types.Transaction, error) {
-	tx := types.NewTransaction(
-		req.Nonce,
-		req.ToAddress,
-		req.Value,
-		req.GasLimit,
-		req.GasPrice,
-		nil,
-	)
 
+	tip := big.NewInt(1_000_000_000) // 1 gwei tip
+
+	feeCap := new(big.Int).Mul(req.BaseFee, big.NewInt(3)) // 3x base fee
+	feeCap.Add(feeCap, tip)
+
+	tx := types.NewTx(&types.DynamicFeeTx{
+		Nonce:     req.Nonce,
+		To:        &req.ToAddress,
+		Value:     req.Value,
+		Gas:       req.GasLimit,
+		GasTipCap: tip,
+		GasFeeCap: feeCap,
+	})
 	return tx, nil
 }
 
@@ -233,7 +246,7 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 	}
 }
 
-func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int, gasPrice *big.Int) ([]*TxRequest, error) {
+func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int, gasPrice *big.Int, baseFee *big.Int) ([]*TxRequest, error) {
 
 	startNonce := w.Nonce
 
@@ -244,8 +257,8 @@ func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wa
 			ToAddress: w.Address,
 			Value:     value,
 			Nonce:     startNonce + uint64(i),
-			GasPrice:  gasPrice,
 			GasLimit:  21000,
+			BaseFee:   baseFee,
 		}
 
 		tx, err := ts.CreateTransaction(&req)

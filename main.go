@@ -347,6 +347,41 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 	logger.Info("  - Value per tx: %s wei\n", value.String())
 	logger.Info("\n")
 
+	// Gas price adjustment mechanism for underpriced errors
+	var gasPriceMultiplier float64 = 1.0
+	var gasPriceMutex sync.RWMutex
+
+	// Function to get current adjusted gas price
+	getAdjustedGasPrice := func(baseGasPrice *big.Int) *big.Int {
+		gasPriceMutex.RLock()
+		multiplier := gasPriceMultiplier
+		gasPriceMutex.RUnlock()
+
+		if multiplier == 1.0 {
+			return baseGasPrice
+		}
+
+		// Apply multiplier: basePrice * multiplier
+		multiplierBig := big.NewFloat(multiplier)
+		basePriceFloat := new(big.Float).SetInt(baseGasPrice)
+		adjustedFloat := new(big.Float).Mul(basePriceFloat, multiplierBig)
+
+		adjustedPrice, _ := adjustedFloat.Int(nil)
+		return adjustedPrice
+	}
+
+	// Function to increase gas price due to underpriced errors
+	increaseGasPrice := func() {
+		gasPriceMutex.Lock()
+		defer gasPriceMutex.Unlock()
+
+		oldMultiplier := gasPriceMultiplier
+		gasPriceMultiplier *= 1.10 // Increase by 10%
+
+		logger.Warn("Gas price multiplier increased from %.2f to %.2f due to underpriced errors\n",
+			oldMultiplier, gasPriceMultiplier)
+	}
+
 	// Use mutex for thread-safe counter updates
 	var wgSubmit sync.WaitGroup // Wait for transaction submissions only
 	// Receipt confirmations happen in background, we don't wait for them
@@ -357,31 +392,15 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 	ctx, wCancel := context.WithTimeout(context.Background(), time.Duration(config.ContextTimeout)*time.Second)
 	defer wCancel()
 
-	gasPrice, err := txSender.GetGasPrice(ctx)
 	feeHistory, feeErr := txSender.FeeHistory(ctx)
 
+	var currentBaseFee *big.Int
 	if feeErr != nil {
 		logger.Warn("Error fetching fee history: %v\n", feeErr)
 	} else {
-		logger.Debug("Current base fee from fee history: %s wei\n", feeHistory.BaseFee[len(feeHistory.BaseFee)-1].String())
+		currentBaseFee = feeHistory.BaseFee[len(feeHistory.BaseFee)-1]
+		logger.Debug("Current base fee from fee history: %s wei\n", currentBaseFee.String())
 	}
-	if err != nil {
-		// 1 gwei default if RPC call fails
-		gasPrice = big.NewInt(1e9)
-		logger.Error("Error fetching gas price, defaulting to 1 gwei: %v\n", err)
-	}
-
-	// if underpricedError true increase gas price by 10% and retry submission (up to 3 retries)
-	underPricedError := false
-	if underPricedError {
-		gasPrice = new(big.Int).Mul(gasPrice, big.NewInt(110))
-		gasPrice = new(big.Int).Div(gasPrice, big.NewInt(100))
-		logger.Warn("Gas price increased by 10%% to %s wei due to underpriced error\n", gasPrice.String())
-		underPricedError = false // reset for next transactions
-	}
-
-	// multiple with 0.01 to increase by 1% instead of 10%
-	gasPrice = new(big.Int).Add(gasPrice, new(big.Int).Div(gasPrice, big.NewInt(100)))
 
 	// Process all wallets in parallel
 	for walletIdx, w := range wallets {
@@ -402,14 +421,30 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 
 			// Prepare batch transactions with precalculated nonces
 			logger.Debug("[Wallet %d/%d] Preparing batch transactions...\n", idx+1, len(wallets))
+
+			// Use adjusted gas price based on current multiplier
+			var baseGasPrice *big.Int
+			if currentBaseFee != nil {
+				baseGasPrice = currentBaseFee
+			} else {
+				// Fallback gas price if fee history is unavailable (20 gwei)
+				baseGasPrice = big.NewInt(20000000000)
+				logger.Debug("[Wallet %d/%d] Using fallback gas price: %s wei\n", idx+1, len(wallets), baseGasPrice.String())
+			}
+			adjustedGasPrice := getAdjustedGasPrice(baseGasPrice)
+
+			if adjustedGasPrice.Cmp(baseGasPrice) != 0 {
+				logger.Debug("[Wallet %d/%d] Using adjusted gas price: %s wei (base: %s wei)\n",
+					idx+1, len(wallets), adjustedGasPrice.String(), baseGasPrice.String())
+			}
+
 			txRequests, err := txSender.PrepareBatchTransactions(
 				wCtx,
 				w,
 				toAddress,
 				value,
 				config.TxPerWallet,
-				gasPrice,
-				feeHistory.BaseFee[len(feeHistory.BaseFee)-1],
+				adjustedGasPrice,
 			)
 
 			if err != nil {
@@ -467,14 +502,16 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 					dbTx.Status = "failed"
 					dbTx.Error = err.Error()
 
-					// Check for specific error before reassigning err variable
-					isUnderpriced := err.Error() == "replacement transaction underpriced"
+					// Check for specific error types that indicate gas price issues
+					isUnderpriced := strings.Contains(err.Error(), "replacement transaction underpriced") ||
+						strings.Contains(err.Error(), "transaction underpriced") ||
+						strings.Contains(err.Error(), "insufficient funds for gas")
 
 					nonce, getNonceErr := txSender.GetNonce(wCtx, w.Address)
 
 					if isUnderpriced {
-						logger.Warn("  [W%d] Nonce too low for wallet %s, likely due to pending transactions. Current nonce: %d\n", idx+1, w.Address.Hex(), nonce)
-						underPricedError = true
+						logger.Warn("  [W%d] Gas price issue for wallet %s (error: %s). Current nonce: %d\n", idx+1, w.Address.Hex(), err.Error(), nonce)
+						increaseGasPrice()
 					}
 
 					if getNonceErr != nil {

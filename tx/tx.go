@@ -250,7 +250,7 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 	}
 }
 
-func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int, gasPrice *big.Int, baseFee *big.Int) ([]*TxRequest, error) {
+func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int, baseFee *big.Int) ([]*TxRequest, error) {
 
 	startNonce := w.Nonce
 

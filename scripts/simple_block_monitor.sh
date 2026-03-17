@@ -81,12 +81,15 @@ while true; do
             if [ "$base_fee_hex" != "0x0" ] && [ "$base_fee_hex" != "null" ] && [ "$base_fee_hex" != "" ]; then
                 base_fee_wei=$(printf "%d" "$base_fee_hex" 2>/dev/null || echo "0")
                 if [ "$base_fee_wei" -gt 0 ]; then
-                    base_fee_gwei=$(echo "scale=3; $base_fee_wei / 1000000000" | bc -l 2>/dev/null || echo "0.000")
+                    base_fee_gwei=$(echo "scale=9; $base_fee_wei / 1000000000" | bc -l 2>/dev/null || echo "0.000000000")
+                    # Format with comma separators for wei (for readability)
+                    base_fee_wei_formatted=$(printf "%'d" "$base_fee_wei" 2>/dev/null || echo "$base_fee_wei")
+                    base_fee_display="${base_fee_wei_formatted} wei (${base_fee_gwei} gwei)"
                 else
-                    base_fee_gwei="0.000"
+                    base_fee_display="0 wei (0.000000000 gwei)"
                 fi
             else
-                base_fee_gwei="0.000"
+                base_fee_display="0 wei (0.000000000 gwei)"
             fi
             
             # Color based on transaction count
@@ -100,7 +103,7 @@ while true; do
                 color="$RED"
             fi
             
-            echo -e "[$timestamp] ${color}Block #$block: $tx_count txs, Base Fee: ${base_fee_gwei} gwei${NC}"
+            echo -e "[$timestamp] ${color}Block #$block: $tx_count txs, Base Fee: ${base_fee_display}${NC}"
         done
         
         last_block=$current_block

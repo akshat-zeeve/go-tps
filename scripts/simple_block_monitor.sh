@@ -20,9 +20,19 @@ echo "RPC URL: $RPC_URL"
 echo "Press Ctrl+C to stop"
 echo "--------------------------------"
 
-# Check if cast is available
+# Check if required tools are available
 if ! command -v cast &> /dev/null; then
     echo -e "${RED}ERROR: cast not found. Install Foundry first.${NC}"
+    exit 1
+fi
+
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}ERROR: jq not found. Please install jq for JSON parsing.${NC}"
+    exit 1
+fi
+
+if ! command -v bc &> /dev/null; then
+    echo -e "${RED}ERROR: bc not found. Please install bc for decimal calculations.${NC}"
     exit 1
 fi
 
@@ -43,6 +53,18 @@ while true; do
             # Get transaction count for this block
             tx_count=$(cast rpc eth_getBlockTransactionCountByNumber "0x$(printf '%x' $block)" --rpc-url "$RPC_URL" 2>/dev/null | sed 's/^0x//' | xargs printf '%d\n' 2>/dev/null || echo "0")
             
+            # Get block details including base fee
+            block_data=$(cast block "$block" --rpc-url "$RPC_URL" --json 2>/dev/null || echo "{}")
+            base_fee_hex=$(echo "$block_data" | jq -r '.baseFeePerGas // "0x0"' 2>/dev/null || echo "0x0")
+            
+            # Convert base fee from hex to decimal (wei) and then to gwei
+            if [ "$base_fee_hex" != "0x0" ] && [ "$base_fee_hex" != "null" ]; then
+                base_fee_wei=$(printf "%d" "$base_fee_hex" 2>/dev/null || echo "0")
+                base_fee_gwei=$(echo "scale=2; $base_fee_wei / 1000000000" | bc -l 2>/dev/null || echo "0.00")
+            else
+                base_fee_gwei="0.00"
+            fi
+            
             # Color based on transaction count
             if [ "$tx_count" -eq 0 ]; then
                 color="$YELLOW"
@@ -54,7 +76,7 @@ while true; do
                 color="$RED"
             fi
             
-            echo -e "[$timestamp] ${color}Block #$block: $tx_count transactions${NC}"
+            echo -e "[$timestamp] ${color}Block #$block: $tx_count txs, Base Fee: ${base_fee_gwei} gwei${NC}"
         done
         
         last_block=$current_block

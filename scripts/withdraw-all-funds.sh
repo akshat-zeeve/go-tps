@@ -75,20 +75,29 @@ do
   echo "  Address: $WALLET_ADDR"
   echo "  Balance: $BALANCE wei ($(cast to-unit $BALANCE ether) ETH)"
   
+  # Get fresh gas price for this transaction (gas price can change quickly)
+  CURRENT_GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null)
+  if [ -z "$CURRENT_GAS_PRICE" ]; then
+    CURRENT_GAS_PRICE="$GAS_PRICE"  # Fallback to original price
+  fi
+  
+  # Add 20% safety buffer to gas cost to handle price fluctuations
+  BUFFERED_GAS_COST=$(echo "$CURRENT_GAS_PRICE * $GAS_LIMIT * 1.2" | bc | cut -d. -f1)
+  
   # Check if wallet has enough funds to cover gas (use bc for large number comparison)
-  if [ "$(echo "$BALANCE <= $GAS_COST" | bc)" -eq "1" ]; then
+  if [ "$(echo "$BALANCE <= $BUFFERED_GAS_COST" | bc)" -eq "1" ]; then
     if [ "$(echo "$BALANCE == 0" | bc)" -eq "1" ]; then
       echo "  ⭕ Empty wallet, skipping"
       ((EMPTY_WALLETS++))
     else
-      echo "  ⚠️  Balance too low to cover gas costs, skipping"
+      echo "  ⚠️  Balance too low to cover gas costs (with buffer), skipping" 
       ((FAILED_WITHDRAWALS++))
     fi
     continue
   fi
   
-  # Calculate amount to send (balance minus gas cost)
-  SEND_AMOUNT=$(echo "$BALANCE - $GAS_COST" | bc)
+  # Calculate amount to send (balance minus buffered gas cost)
+  SEND_AMOUNT=$(echo "$BALANCE - $BUFFERED_GAS_COST" | bc | cut -d. -f1)
   echo "  Withdrawing: $SEND_AMOUNT wei ($(cast to-unit $SEND_AMOUNT ether) ETH)"
   
   # Get private key for this wallet
@@ -99,10 +108,9 @@ do
     continue
   fi
   
-  # Send transaction
+  # Send transaction (let cast handle gas price automatically for better reliability)
   if TX_HASH=$(cast send --private-key "$WALLET_PK" \
                         --rpc-url "$RPC_URL" \
-                        --gas-price "$GAS_PRICE" \
                         --gas-limit "$GAS_LIMIT" \
                         --value "$SEND_AMOUNT" \
                         "$DESTINATION" \

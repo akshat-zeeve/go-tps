@@ -258,7 +258,7 @@ func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wa
 	for i := 0; i < count; i++ {
 		req := TxRequest{
 			Wallet:    w,
-			ToAddress: w.Address,
+			ToAddress: toAddress,
 			Value:     value,
 			Nonce:     startNonce + uint64(i),
 			GasLimit:  21000,

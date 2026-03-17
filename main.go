@@ -515,7 +515,7 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 
 					// For nonce errors, log the expected vs actual nonce for debugging
 					if strings.Contains(err.Error(), "nonce too low") {
-						logger.Warn("  [W%d] Nonce conflict for wallet %s: %s (tx nonce: %d)\n", 
+						logger.Warn("  [W%d] Nonce conflict for wallet %s: %s (tx nonce: %d)\n",
 							idx+1, w.Address.Hex(), err.Error(), req.Nonce)
 					}
 

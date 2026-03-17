@@ -2,11 +2,10 @@ package tx
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"math/big"
 	"time"
-
-	"go-tps/wallet"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -20,7 +19,6 @@ type TransactionSender struct {
 }
 
 type TxRequest struct {
-	Wallet    *wallet.Wallet
 	ToAddress common.Address
 	Value     *big.Int
 	Nonce     uint64
@@ -109,9 +107,9 @@ func (ts *TransactionSender) CreateTransaction(req *TxRequest) (*types.Transacti
 	return tx, nil
 }
 
-func (ts *TransactionSender) SignTransaction(txn *types.Transaction, w *wallet.Wallet) (*types.Transaction, error) {
+func (ts *TransactionSender) SignTransaction(txn *types.Transaction, prv *ecdsa.PrivateKey) (*types.Transaction, error) {
 	signer := types.NewLondonSigner(ts.chainID)
-	signedTx, err := types.SignTx(txn, signer, w.PrivateKey)
+	signedTx, err := types.SignTx(txn, signer, prv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
@@ -250,14 +248,13 @@ func (ts *TransactionSender) WaitForReceiptWithSharedWebSocket(ctx context.Conte
 	}
 }
 
-func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wallet.Wallet, toAddress common.Address, value *big.Int, count int, baseFee *big.Int, gasLimit uint64) ([]*TxRequest, error) {
+func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, toAddress common.Address, value *big.Int, count int, baseFee *big.Int, gasLimit uint64, prv *ecdsa.PrivateKey, nonce uint64) ([]*TxRequest, uint64, error) {
 
-	startNonce := w.Nonce
+	startNonce := nonce
 
 	requests := make([]*TxRequest, 0, count)
 	for i := 0; i < count; i++ {
 		req := TxRequest{
-			Wallet:    w,
 			ToAddress: toAddress,
 			Value:     value,
 			Nonce:     startNonce + uint64(i),
@@ -267,20 +264,19 @@ func (ts *TransactionSender) PrepareBatchTransactions(ctx context.Context, w *wa
 
 		tx, err := ts.CreateTransaction(&req)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create transaction: %w", err)
+			return nil, 0, fmt.Errorf("failed to create transaction: %w", err)
 		}
 
-		signedTx, err := ts.SignTransaction(tx, req.Wallet)
+		signedTx, err := ts.SignTransaction(tx, prv)
 		if err != nil {
-			return nil, fmt.Errorf("failed to sign transaction: %w", err)
+			return nil, 0, fmt.Errorf("failed to sign transaction: %w", err)
 		}
 
 		req.signedTx = signedTx
 		requests = append(requests, &req)
 
 	}
-	w.Nonce += uint64(count)
-	return requests, nil
+	return requests, startNonce + uint64(count), nil
 }
 
 func (ts *TransactionSender) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {

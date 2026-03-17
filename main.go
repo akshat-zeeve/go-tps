@@ -97,7 +97,7 @@ func main() {
 	// Generate wallets from single mnemonic
 	logger.Info("Deriving %d wallets from mnemonic...\n", config.WalletCount)
 
-	wallets, err := wallet.DeriveWalletsFromMnemonic(mnemonic, config.WalletCount)
+	wallets, err := wallet.DeriveWalletsFromMnemonic(mnemonic, config.WalletCount, txSender)
 	if err != nil {
 		logger.Error("Error deriving wallets: %v\n", err)
 		os.Exit(1)
@@ -419,17 +419,6 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 			// Prepare batch transactions with precalculated nonces
 			logger.Debug("[Wallet %d/%d] Preparing batch transactions...\n", idx+1, len(wallets))
 
-			// Get fresh nonce for this wallet (critical for avoiding "nonce too low" errors)
-			freshNonce, nonceErr := txSender.GetNonce(wCtx, w.Address)
-			if nonceErr != nil {
-				logger.Error("[Wallet %d/%d] Error fetching fresh nonce: %v\n", idx+1, len(wallets), nonceErr)
-				return
-			}
-			logger.Debug("[Wallet %d/%d] Fresh nonce from network: %d\n", idx+1, len(wallets), freshNonce)
-
-			// Update wallet with fresh nonce before preparing transactions
-			w.Nonce = freshNonce
-
 			// Use adjusted gas price based on current multiplier
 			var baseGasPrice *big.Int
 			if currentBaseFee != nil {
@@ -455,14 +444,15 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 					idx+1, len(wallets), adjustedGasPrice.String(), baseGasPrice.String())
 			}
 
-			txRequests, err := txSender.PrepareBatchTransactions(
+			txRequests, newNonce, err := txSender.PrepareBatchTransactions(
 				wCtx,
-				w,
 				toAddress,
 				value,
 				config.TxPerWallet,
 				adjustedGasPrice,
 				config.GasLimit,
+				w.PrivateKey,
+				w.Nonce,
 			)
 
 			if err != nil {
@@ -470,6 +460,11 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 				return
 			}
 			logger.Debug("[Wallet %d/%d] Successfully prepared %d transactions\n", idx+1, len(wallets), len(txRequests))
+
+			// Update wallet nonce
+			w.Lock()
+			w.Nonce = newNonce
+			w.Unlock()
 
 			// Sleep until next minute boundary if configured
 			if config.SleepMinutes > 0 {
@@ -490,7 +485,9 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 				// Per-transaction context so one hung RPC call doesn't block
 				// the wallet goroutine longer than ContextTimeout seconds.
 				txCtx, txCancel := context.WithTimeout(context.Background(), time.Duration(config.ContextTimeout)*time.Second)
+				w.Lock()
 				result, err := txSender.CreateAndSendTransaction(txCtx, req)
+				w.Unlock()
 				txCancel()
 
 				// Guard against nil result (returned when CreateTransaction or
@@ -519,6 +516,18 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 				if err != nil {
 					dbTx.Status = "failed"
 					dbTx.Error = err.Error()
+
+					// Update wallet nonce
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					newNonce, err := txSender.GetNonce(ctx, w.Address)
+					cancel() // Call cancel immediately instead of deferring
+					if err != nil {
+						logger.Error("  [W%d] Failed to update nonce for wallet %s: %v\n", idx+1, w.Address.Hex(), err)
+					} else {
+						w.Lock()
+						w.Nonce = newNonce
+						w.Unlock()
+					}
 
 					// Check for specific error types that indicate gas price issues
 					isUnderpriced := strings.Contains(err.Error(), "replacement transaction underpriced") ||

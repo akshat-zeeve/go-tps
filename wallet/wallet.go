@@ -1,8 +1,12 @@
 package wallet
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"go-tps/tx"
+	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -16,6 +20,7 @@ type Wallet struct {
 	PrivateKey     *ecdsa.PrivateKey
 	DerivationPath string
 	Nonce          uint64
+	sync.Mutex
 }
 
 // GenerateMnemonic generates a new mnemonic phrase
@@ -34,7 +39,7 @@ func GenerateMnemonic() (string, error) {
 }
 
 // DeriveWalletsFromMnemonic derives multiple wallets from a single mnemonic.
-func DeriveWalletsFromMnemonic(mnemonic string, count int) ([]*Wallet, error) {
+func DeriveWalletsFromMnemonic(mnemonic string, count int, txSender *tx.TransactionSender) ([]*Wallet, error) {
 	w, err := hdwallet.NewFromMnemonic(mnemonic)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HD wallet: %w", err)
@@ -55,12 +60,20 @@ func DeriveWalletsFromMnemonic(mnemonic string, count int) ([]*Wallet, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get private key for account %d: %w", i, err)
 		}
+		// context with 30 timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+		nonce, err := txSender.GetNonce(ctx, account.Address)
+		cancel() // Call cancel immediately instead of deferring
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce for wallet %d: %w", i, err)
+		}
 
 		wallets = append(wallets, &Wallet{
 			Address:        account.Address,
 			PrivateKey:     privateKey,
 			DerivationPath: path.String(),
-			Nonce:          0,
+			Nonce:          nonce,
 		})
 	}
 

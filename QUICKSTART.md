@@ -15,6 +15,25 @@ Get up and running with go-tps in under 10 minutes.
 - An Ethereum RPC endpoint (local testnet recommended for initial testing)
 - ETH-funded wallets — the tool generates new wallets that need ETH for gas
 
+## Dependencies
+
+**Core Dependencies:**
+- `github.com/ethereum/go-ethereum` - Ethereum Go client
+- `github.com/mattn/go-sqlite3` - SQLite driver
+- `github.com/tyler-smith/go-bip39` - BIP39 mnemonic implementation
+- `github.com/miguelmota/go-ethereum-hdwallet` - HD wallet implementation
+- `github.com/joho/godotenv` - Environment configuration
+- `gopkg.in/natefinch/lumberjack.v2` - Log rotation and management
+
+**Current Architecture:**
+The project uses a modular package structure:
+- `config/` - Configuration management
+- `db/` - Database operations
+- `logger/` - Structured logging
+- `tx/` - Transaction handling
+- `wallet/` - Wallet management
+- `worker/` - Worker pools and job processing
+
 ## Step 1: Build the Project
 ```bash
 # From the project directory

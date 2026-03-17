@@ -62,7 +62,7 @@ A Go-based tool for benchmarking Ethereum network transaction throughput (TPS). 
 
 ## Prerequisites
 
-- Go 1.19 or higher
+- Go 1.19 or higher (current module compiled with go 1.25.2)
 - Access to an Ethereum RPC endpoint (local or remote)
 - Sufficient ETH in generated wallets to pay for gas fees
 
@@ -96,6 +96,16 @@ Configure the application using environment variables:
 | `RUN_DURATION_MINUTES` | Duration to run in loop mode (0 = single run) | `0` |
 | `RECEIPT_WORKERS` | Number of concurrent workers for receipt confirmation | `10` |
 | `LOG_LEVEL` | Log level: DEBUG, INFO, WARN, ERROR | `DEBUG` |
+
+**Environment File Support:**
+You can also use a `.env` file for persistent configuration:
+```bash
+# Copy the example file
+cp .env.example .env
+# Edit .env with your preferred settings
+```
+
+The tool will automatically load `.env` if present, with command-line environment variables taking precedence.
 
 ## Usage
 
@@ -457,21 +467,86 @@ sqlite> SELECT status, COUNT(*) FROM transactions GROUP BY status;
 sqlite> SELECT wallet_address, COUNT(*) as tx_count FROM transactions GROUP BY wallet_address;
 ```
 
+### Block Transaction Monitoring
+
+Monitor real-time blockchain activity with included monitoring tools:
+
+#### Advanced Monitor (`scripts/block_tx_monitor.sh`)
+Real-time WebSocket-based monitoring with rich output:
+- WebSocket subscriptions for instant block notifications  
+- Color-coded display based on transaction volume
+- JSON parsing for detailed block information
+- Error handling and connection status
+
+```bash
+# Default (localhost:8545)
+./scripts/block_tx_monitor.sh
+
+# Custom RPC URL
+RPC_URL="http://your-node:8545" ./scripts/block_tx_monitor.sh
+```
+
+#### Simple Monitor (`scripts/simple_block_monitor.sh`)
+Polling-based monitor for maximum compatibility:
+- Block number polling every second
+- More reliable with basic RPC endpoints
+- Catches all blocks without missing any
+- Simpler implementation
+
+```bash
+# Default (localhost:8545)  
+./scripts/simple_block_monitor.sh
+
+# Custom RPC URL
+RPC_URL="http://your-node:8545" ./scripts/simple_block_monitor.sh
+```
+
+**Output Format:**
+Both monitors display real-time activity with color coding:
+```
+[14:30:15] Block #1234567: 0 transactions      # 🟡 Yellow (empty)
+[14:30:27] Block #1234568: 15 transactions     # 🔵 Blue (medium)  
+[14:30:39] Block #1234569: 3 transactions      # 🟢 Green (low)
+[14:30:51] Block #1234570: 67 transactions     # 🔴 Red (high)
+```
+
+**Use Cases:**
+- Monitor network activity during TPS tests
+- Verify transaction inclusion rates
+- Analyze block production patterns
+- Debug transaction propagation issues
+
+See [scripts/BLOCK_MONITOR_README.md](scripts/BLOCK_MONITOR_README.md) for detailed documentation.
+
 ## Project Structure
 
 ```
 go-tps/
 ├── main.go              # Main application entry point
-├── wallet.go            # Wallet generation and mnemonic handling
-├── transaction.go       # Transaction creation and sending
-├── database.go          # SQLite database operations
+├── config/              # Configuration management
+│   └── config.go        # Configuration loading and validation
+├── db/                  # Database operations
+│   └── database.go      # SQLite database operations
+├── logger/              # Logging system
+│   └── logger.go        # Structured logging with levels and file output
+├── tx/                  # Transaction handling
+│   └── tx.go           # Transaction creation, signing, and sending
+├── wallet/              # Wallet management
+│   └── wallet.go       # Wallet generation and mnemonic handling
+├── worker/              # Worker pools and job processing
+│   └── worker.go       # Receipt confirmation workers and job queues
 ├── requirements.txt     # Python dependencies for analysis tools
 ├── queries.sql          # Pre-written SQL queries
 ├── scripts/             # Analysis and visualization tools
 │   ├── README.md        # Scripts documentation
 │   ├── analyze.sh       # Shell script for database analysis
 │   ├── graph_metrics.py # Unified TPS, Latency & Gas Price graphing tool
-│   └── get-gas.py       # Gas price analysis helper
+│   ├── get-gas.py       # Gas price analysis helper
+│   ├── export-address-transactions.js # Export Etherscan address transactions to CSV
+│   ├── export-example.sh # Interactive example for address export
+│   ├── block_tx_monitor.sh # Real-time block transaction monitor
+│   ├── simple_block_monitor.sh # Simple block monitor
+│   └── BLOCK_MONITOR_README.md # Block monitoring documentation
 ├── analyze.sh           # Wrapper for scripts/analyze.sh
 ├── graph.py             # Wrapper for scripts/graph_metrics.py
 ├── images/              # Output folder for all generated graphs
@@ -483,8 +558,13 @@ go-tps/
 │   ├── info.log
 │   ├── warn.log
 │   └── error.log
+├── kubernetes/          # Kubernetes deployment manifests
+│   └── stateful.yaml   # StatefulSet deployment for Kubernetes
+├── .env                 # Environment configuration file
+├── .env.example         # Example environment configuration
 ├── go.mod               # Go module dependencies
 ├── go.sum               # Dependency checksums
+├── Makefile             # Build automation
 ├── README.md            # This file
 ├── QUICKSTART.md        # Quick start guide
 ├── PROJECT_STRUCTURE.md # Project structure documentation
@@ -695,6 +775,55 @@ SELECT
 FROM transactions
 GROUP BY hour;
 ```
+
+### Kubernetes Deployment
+
+Deploy go-tps in a Kubernetes cluster for scalable testing:
+
+**Prerequisites:**
+- Kubernetes cluster access  
+- kubectl configured
+- Docker image built and pushed to registry
+
+**Using the provided StatefulSet:**
+```bash
+# Deploy the StatefulSet
+kubectl apply -f kubernetes/stateful.yaml
+
+# Check deployment status
+kubectl get pods -l app=go-tps
+
+# View logs
+kubectl logs -f statefulset/go-tps
+
+# Access the pod for further commands
+kubectl exec -it go-tps-0 -- /bin/bash
+```
+
+**Features of the StatefulSet:**
+- Headless service for internal communication
+- Persistent storage for database and logs
+- Configurable replicas for parallel testing
+- Environment variables for configuration
+- Resource limits and requests
+
+**Configuration:**
+Set environment variables in the StatefulSet spec or use ConfigMaps/Secrets:
+```yaml
+env:
+- name: RPC_URL
+  value: "http://your-ethereum-rpc:8545"
+- name: WALLET_COUNT
+  value: "10"
+- name: TX_PER_WALLET  
+  value: "10"
+```
+
+**Use Cases:**
+- Large-scale distributed TPS testing
+- CI/CD integration for performance regression testing
+- Multi-region blockchain performance comparison
+- Automated testing pipelines
 
 ### Tips & Best Practices
 

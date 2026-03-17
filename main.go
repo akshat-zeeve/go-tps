@@ -133,16 +133,6 @@ func main() {
 	allFunded := true
 
 	for i, w := range wallets {
-
-		wallets[i].Nonce, err = txSender.GetNonce(setupCtx, w.Address)
-
-		if err != nil {
-			logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
-			logger.Error("Error fetching nonce: %v\n", err)
-			allFunded = false
-			continue
-		}
-
 		balance, err := txSender.GetBalance(setupCtx, w.Address)
 		if err != nil {
 			logger.Debug("[%d] %s\n", i+1, w.Address.Hex())
@@ -422,6 +412,17 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 			// Prepare batch transactions with precalculated nonces
 			logger.Debug("[Wallet %d/%d] Preparing batch transactions...\n", idx+1, len(wallets))
 
+			// Get fresh nonce for this wallet (critical for avoiding "nonce too low" errors)
+			freshNonce, nonceErr := txSender.GetNonce(wCtx, w.Address)
+			if nonceErr != nil {
+				logger.Error("[Wallet %d/%d] Error fetching fresh nonce: %v\n", idx+1, len(wallets), nonceErr)
+				return
+			}
+			logger.Debug("[Wallet %d/%d] Fresh nonce from network: %d\n", idx+1, len(wallets), freshNonce)
+
+			// Update wallet with fresh nonce before preparing transactions
+			w.Nonce = freshNonce
+
 			// Use adjusted gas price based on current multiplier
 			var baseGasPrice *big.Int
 			if currentBaseFee != nil {
@@ -507,17 +508,15 @@ func runSingleExecution(config *config.Config, txSender *txpkg.TransactionSender
 						strings.Contains(err.Error(), "transaction underpriced") ||
 						strings.Contains(err.Error(), "insufficient funds for gas")
 
-					nonce, getNonceErr := txSender.GetNonce(wCtx, w.Address)
-
 					if isUnderpriced {
-						logger.Warn("  [W%d] Gas price issue for wallet %s (error: %s). Current nonce: %d\n", idx+1, w.Address.Hex(), err.Error(), nonce)
+						logger.Warn("  [W%d] Gas price issue for wallet %s (error: %s)\n", idx+1, w.Address.Hex(), err.Error())
 						increaseGasPrice()
 					}
 
-					if getNonceErr != nil {
-						logger.Error("  [W%d] Failed to get nonce for wallet %s: %v\n", idx+1, w.Address.Hex(), getNonceErr)
-					} else {
-						wallets[walletIdx].Nonce = nonce
+					// For nonce errors, log the expected vs actual nonce for debugging
+					if strings.Contains(err.Error(), "nonce too low") {
+						logger.Warn("  [W%d] Nonce conflict for wallet %s: %s (tx nonce: %d)\n", 
+							idx+1, w.Address.Hex(), err.Error(), req.Nonce)
 					}
 
 					// Print failure reason

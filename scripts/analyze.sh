@@ -135,10 +135,47 @@ EOF
 
 errors() {
     echo "=== ERROR ANALYSIS ==="
+    echo ""
+    echo "Error Summary:"
+    sqlite3 "$DB_PATH" -header -column <<EOF
+SELECT 
+    'Total Errors:' as metric,
+    COUNT(*) as value
+FROM transactions 
+WHERE error IS NOT NULL AND error != ''
+UNION ALL
+SELECT 
+    'Affected Wallets:' as metric,
+    COUNT(DISTINCT wallet_address) as value
+FROM transactions 
+WHERE error IS NOT NULL AND error != ''
+UNION ALL
+SELECT 
+    'Error Types:' as metric,
+    COUNT(DISTINCT error) as value
+FROM transactions 
+WHERE error IS NOT NULL AND error != ''
+UNION ALL
+SELECT 
+    'First Error:' as metric,
+    MIN(submitted_at) as value
+FROM transactions 
+WHERE error IS NOT NULL AND error != ''
+UNION ALL
+SELECT 
+    'Last Error:' as metric,
+    MAX(submitted_at) as value
+FROM transactions 
+WHERE error IS NOT NULL AND error != '';
+EOF
+
+    echo ""
+    echo "=== MOST COMMON ERRORS ==="
     sqlite3 "$DB_PATH" -header -column <<EOF
 SELECT 
     error,
-    COUNT(*) as count
+    COUNT(*) as count,
+    MIN(submitted_at) as first_occurrence
 FROM transactions
 WHERE error IS NOT NULL AND error != ''
 GROUP BY error
@@ -147,17 +184,18 @@ LIMIT 10;
 EOF
     
     echo ""
-    echo "=== RECENT FAILED TRANSACTIONS ==="
+    echo "=== FIRST 10 ERROR TRANSACTIONS (Chronological) ==="
     sqlite3 "$DB_PATH" -header -column <<EOF
 SELECT 
+    SUBSTR(tx_hash, 1, 12) || '...' as tx_hash,
     SUBSTR(wallet_address, 1, 10) || '...' as wallet,
     nonce,
-    SUBSTR(error, 1, 50) as error_msg,
+    SUBSTR(error, 1, 40) || (CASE WHEN LENGTH(error) > 40 THEN '...' ELSE '' END) as error_msg,
     submitted_at
 FROM transactions
-WHERE status = 'failed'
-ORDER BY submitted_at DESC
-LIMIT 5;
+WHERE error IS NOT NULL AND error != ''
+ORDER BY submitted_at ASC
+LIMIT 10;
 EOF
 }
 

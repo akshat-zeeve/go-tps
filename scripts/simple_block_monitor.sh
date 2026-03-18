@@ -26,29 +26,36 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
-if ! command -v jq &> /dev/null; then
-    echo -e "${RED}ERROR: jq not found. Please install jq for JSON parsing.${NC}"
-    exit 1
-fi
+# Helper function to extract JSON result field using sed
+extract_json_result() {
+    sed -n 's/.*"result":"\([^"]*\)".*/\1/p' | head -1
+}
 
-if ! command -v bc &> /dev/null; then
-    echo -e "${RED}ERROR: bc not found. Please install bc for decimal calculations.${NC}"
-    exit 1
-fi
+# Helper function to convert hex to decimal
+hex_to_dec() {
+    local hex_val="$1"
+    if [[ "$hex_val" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        printf "%d" "$hex_val" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
 
 # Helper function to get latest block number
 get_block_number() {
-    curl -s -X POST -H "Content-Type: application/json" \
+    local result=$(curl -s -X POST -H "Content-Type: application/json" \
         --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-        "$RPC_URL" | jq -r '.result // "0x0"' 2>/dev/null | xargs -I {} printf "%d" {} 2>/dev/null || echo "0"
+        "$RPC_URL" | extract_json_result)
+    hex_to_dec "$result"
 }
 
 # Helper function to get transaction count for a block
 get_tx_count() {
     local block_hex="$1"
-    curl -s -X POST -H "Content-Type: application/json" \
+    local result=$(curl -s -X POST -H "Content-Type: application/json" \
         --data '{"jsonrpc":"2.0","method":"eth_getBlockTransactionCountByNumber","params":["'$block_hex'"],"id":1}' \
-        "$RPC_URL" | jq -r '.result // "0x0"' 2>/dev/null | xargs -I {} printf "%d" {} 2>/dev/null || echo "0"
+        "$RPC_URL" | extract_json_result)
+    hex_to_dec "$result"
 }
 
 # Get starting block number
@@ -74,22 +81,24 @@ while true; do
                 --data '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["'$block_hex'",false],"id":1}' \
                 "$RPC_URL" 2>/dev/null || echo '{"result":{}}')
             
-            # Extract base fee from JSON response
-            base_fee_hex=$(echo "$block_data" | jq -r '.result.baseFeePerGas // "0x0"' 2>/dev/null || echo "0x0")
+            # Extract base fee from JSON response using sed
+            base_fee_hex=$(echo "$block_data" | sed -n 's/.*"baseFeePerGas":"\([^"]*\)".*/\1/p' | head -1)
             
-            # Convert base fee from hex to decimal (wei) and then to gwei
-            if [ "$base_fee_hex" != "0x0" ] && [ "$base_fee_hex" != "null" ] && [ "$base_fee_hex" != "" ]; then
-                base_fee_wei=$(printf "%d" "$base_fee_hex" 2>/dev/null || echo "0")
+            # Convert base fee from hex to decimal (wei) and then to gwei using bash arithmetic
+            if [ -n "$base_fee_hex" ] && [ "$base_fee_hex" != "null" ] && [ "$base_fee_hex" != "" ]; then
+                base_fee_wei=$(hex_to_dec "$base_fee_hex")
                 if [ "$base_fee_wei" -gt 0 ]; then
-                    base_fee_gwei=$(echo "scale=9; $base_fee_wei / 1000000000" | bc -l 2>/dev/null || echo "0.000000000")
-                    # Format with comma separators for wei (for readability)
-                    base_fee_wei_formatted=$(printf "%'d" "$base_fee_wei" 2>/dev/null || echo "$base_fee_wei")
-                    base_fee_display="${base_fee_wei_formatted} wei (${base_fee_gwei} gwei)"
+                    # Convert to gwei using bash arithmetic (limited precision)
+                    base_fee_gwei=$((base_fee_wei / 1000000000))
+                    base_fee_remainder=$((base_fee_wei % 1000000000))
+                    # Format with basic precision (3 decimal places)
+                    base_fee_gwei_decimal=$((base_fee_remainder / 1000000))
+                    base_fee_display="${base_fee_wei} wei (${base_fee_gwei}.$(printf "%03d" $base_fee_gwei_decimal) gwei)"
                 else
-                    base_fee_display="0 wei (0.000000000 gwei)"
+                    base_fee_display="0 wei (0.000 gwei)"
                 fi
             else
-                base_fee_display="0 wei (0.000000000 gwei)"
+                base_fee_display="0 wei (0.000 gwei)"
             fi
             
             # Color based on transaction count

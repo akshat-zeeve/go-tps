@@ -14,8 +14,9 @@ import (
 )
 
 type TransactionSender struct {
-	client  *ethclient.Client
-	chainID *big.Int
+	client           *ethclient.Client
+	chainID          *big.Int
+	eip1559Supported bool
 }
 
 type TxRequest struct {
@@ -51,10 +52,22 @@ func NewTransactionSender(rpcURL string) (*TransactionSender, error) {
 		return nil, fmt.Errorf("failed to get chain ID: %w", err)
 	}
 
+	eip1559 := false
+	header, err := client.HeaderByNumber(ctx, nil)
+	if err == nil && header.BaseFee != nil {
+		eip1559 = true
+	}
+
 	return &TransactionSender{
-		client:  client,
-		chainID: chainID,
+		client:           client,
+		chainID:          chainID,
+		eip1559Supported: eip1559,
 	}, nil
+}
+
+// SupportsEIP1559 reports whether the connected node supports EIP-1559 transactions.
+func (ts *TransactionSender) SupportsEIP1559() bool {
+	return ts.eip1559Supported
 }
 
 func (ts *TransactionSender) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
@@ -90,25 +103,40 @@ func (ts *TransactionSender) GetBalance(ctx context.Context, address common.Addr
 }
 
 func (ts *TransactionSender) CreateTransaction(req *TxRequest) (*types.Transaction, error) {
+	if ts.eip1559Supported {
+		tip := big.NewInt(1_000_000_000) // 1 gwei priority fee
+		feeCap := new(big.Int).Mul(req.BaseFee, big.NewInt(3))
+		feeCap.Add(feeCap, tip)
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID:   ts.chainID,
+			Nonce:     req.Nonce,
+			To:        &req.ToAddress,
+			Value:     req.Value,
+			Gas:       req.GasLimit,
+			GasTipCap: tip,
+			GasFeeCap: feeCap,
+		})
+		return tx, nil
+	}
 
-	tip := big.NewInt(1_000_000_000) // 1 gwei tip
-
-	feeCap := new(big.Int).Mul(req.BaseFee, big.NewInt(3)) // 3x base fee
-	feeCap.Add(feeCap, tip)
-
-	tx := types.NewTx(&types.DynamicFeeTx{
-		Nonce:     req.Nonce,
-		To:        &req.ToAddress,
-		Value:     req.Value,
-		Gas:       req.GasLimit,
-		GasTipCap: tip,
-		GasFeeCap: feeCap,
+	// Legacy / EIP-155 transaction
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    req.Nonce,
+		To:       &req.ToAddress,
+		Value:    req.Value,
+		Gas:      req.GasLimit,
+		GasPrice: req.BaseFee,
 	})
 	return tx, nil
 }
 
 func (ts *TransactionSender) SignTransaction(txn *types.Transaction, prv *ecdsa.PrivateKey) (*types.Transaction, error) {
-	signer := types.NewLondonSigner(ts.chainID)
+	var signer types.Signer
+	if ts.eip1559Supported {
+		signer = types.NewLondonSigner(ts.chainID)
+	} else {
+		signer = types.NewEIP155Signer(ts.chainID)
+	}
 	signedTx, err := types.SignTx(txn, signer, prv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)

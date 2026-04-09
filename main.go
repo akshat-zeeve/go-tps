@@ -60,7 +60,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer txSender.Close()
-	logger.Info("✓ Connected to RPC\n")
+	if txSender.SupportsEIP1559() {
+		logger.Info("✓ Connected to RPC (EIP-1559 / dynamic-fee transactions enabled)\n")
+	} else {
+		logger.Info("✓ Connected to RPC (legacy EIP-155 transactions — node does not support EIP-1559)\n")
+	}
 
 	// Connect to WebSocket if URL is provided (for faster receipt confirmations)
 	var wsManager *worker.WebSocketManager
